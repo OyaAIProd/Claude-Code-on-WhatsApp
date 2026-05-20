@@ -1,98 +1,111 @@
 @echo off
-chcp 65001 >nul
-setlocal EnableDelayedExpansion
-
-echo.
-echo ============================================
-echo   Claude Code Personal OS - Installer
-echo   Windows Edition
-echo ============================================
-echo.
-
+chcp 65001 >nul 2>&1
+title Claude Code on WhatsApp - Installer
 cd /d "%~dp0"
-set ROOT=%cd%
+set "ROOT=%cd%"
+
+echo.
+echo ============================================
+echo   Claude Code on WhatsApp - Installer
+echo ============================================
+echo.
 
 REM ── Check Node.js ───────────────────────────────
-echo [1/6] Check Node.js...
+echo [1/5] Cek Node.js...
 where node >nul 2>nul
 if errorlevel 1 (
-    echo Node.js belum terinstall.
-    echo Download dari: https://nodejs.org/en/download
-    echo Pilih LTS version. Setelah install, jalankan installer ini lagi.
-    start https://nodejs.org/en/download
-    pause
+    echo.
+    echo   [X] Node.js belum terinstall.
+    echo   Buka: https://nodejs.org/en/download
+    echo   Download LTS, install, lalu jalankan install.bat lagi.
+    echo.
+    start "" https://nodejs.org/en/download
+    echo Tekan tombol apa saja untuk keluar...
+    pause >nul
     exit /b 1
 )
-for /f "tokens=*" %%v in ('node --version') do set NODE_VER=%%v
-echo   Node.js !NODE_VER! OK
+for /f "tokens=*" %%v in ('node --version 2^>nul') do set "NODE_VER=%%v"
+echo   [OK] Node.js %NODE_VER%
+echo.
 
 REM ── Check Claude Code CLI ───────────────────────
-echo [2/6] Check Claude Code CLI...
+echo [2/5] Cek Claude Code CLI...
 where claude >nul 2>nul
 if errorlevel 1 (
-    echo Claude Code CLI belum ada. Install via npm...
+    echo   Claude Code belum ada. Installing via npm...
     call npm install -g @anthropic-ai/claude-code
     if errorlevel 1 (
-        echo Install gagal. Coba jalan PowerShell as Admin lalu: npm i -g @anthropic-ai/claude-code
+        echo   [X] Install gagal. Coba buka PowerShell as Administrator lalu:
+        echo       npm install -g @anthropic-ai/claude-code
+        echo.
         pause
         exit /b 1
     )
 )
-echo   Claude Code OK
-
-REM ── Login Claude Code ───────────────────────────
-echo [3/6] Login Claude Code...
-echo Browser akan kebuka untuk login subscription.
-echo Login dengan akun Claude.ai lo, authorize, balik kesini.
+echo   [OK] Claude Code CLI
 echo.
-choice /c YN /m "Lanjut login sekarang"
-if errorlevel 2 goto skip_login
-start cmd /c "claude login && pause"
-echo Setelah login berhasil, tekan tombol apa aja...
-pause >nul
-:skip_login
 
-REM ── npm install all ─────────────────────────────
-echo [4/6] Install dependencies...
+REM ── Install dependencies ────────────────────────
+echo [3/5] Install dependencies (mungkin agak lama)...
 for %%D in (whatsapp-bot telegram-bot futsal-mcp) do (
     if exist "%%D\package.json" (
-        echo   Installing %%D...
+        echo   - Installing %%D ...
         pushd "%%D"
-        call npm install --silent --no-audit --no-fund
+        call npm install --no-audit --no-fund --loglevel=error
         popd
     )
 )
 if exist "package.json" (
-    echo   Installing root...
-    call npm install --silent --no-audit --no-fund
+    echo   - Installing root ...
+    call npm install --no-audit --no-fund --loglevel=error
 )
-echo   Dependencies OK
+echo   [OK] Dependencies
+echo.
 
 REM ── Buat Desktop Shortcut ───────────────────────
-echo [5/6] Buat shortcut di Desktop...
-set "SHORTCUT=%USERPROFILE%\Desktop\Claude Code Personal OS.lnk"
-set "PS_CMD=$WshShell = New-Object -ComObject WScript.Shell; $sc = $WshShell.CreateShortcut('!SHORTCUT!'); $sc.TargetPath = '%ROOT%\start.bat'; $sc.WorkingDirectory = '%ROOT%'; $sc.IconLocation = '%SystemRoot%\System32\shell32.dll,13'; $sc.Description = 'Start Claude Code Personal OS'; $sc.Save()"
-powershell -NoProfile -Command "!PS_CMD!" >nul 2>&1
-if exist "!SHORTCUT!" (
-    echo   Shortcut dibuat: !SHORTCUT!
+echo [4/5] Buat shortcut di Desktop...
+set "PSCMD=$ws=New-Object -ComObject WScript.Shell; $s=$ws.CreateShortcut([System.IO.Path]::Combine([Environment]::GetFolderPath('Desktop'),'Claude Code on WhatsApp.lnk')); $s.TargetPath='%ROOT%\start.bat'; $s.WorkingDirectory='%ROOT%'; $s.IconLocation='%SystemRoot%\System32\shell32.dll,13'; $s.Description='Start Claude Code on WhatsApp'; $s.Save()"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "%PSCMD%" >nul 2>&1
+if exist "%USERPROFILE%\Desktop\Claude Code on WhatsApp.lnk" (
+    echo   [OK] Shortcut dibuat di Desktop
 ) else (
-    echo   Warning: shortcut gagal dibuat. Manual: double-click start.bat
+    echo   [!] Shortcut gagal. Manual: double-click start.bat
+)
+echo.
+
+REM ── Login Claude Code ───────────────────────────
+echo [5/5] Login Claude Code...
+echo   Bot pakai akun Claude.ai lo (subscription).
+echo   Browser akan kebuka untuk login.
+echo.
+set /p "DOLOGIN=Login Claude sekarang? (Y/N): "
+if /i "%DOLOGIN%"=="Y" (
+    start "Claude Login" cmd /k "claude login"
+    echo   Setelah login selesai di window baru, balik kesini.
+    echo.
+    pause
 )
 
-REM ── Done ────────────────────────────────────────
-echo [6/6] Install selesai!
 echo.
 echo ============================================
-echo   SETUP SELESAI
+echo   INSTALL SELESAI
 echo ============================================
 echo.
 echo Langkah selanjutnya:
-echo   1. Double-click shortcut "Claude Code Personal OS" di Desktop
-echo      atau jalankan: start.bat
-echo   2. Browser akan otomatis buka setup wizard
-echo   3. Isi 5 form (~3 menit)
-echo   4. Scan QR WhatsApp yang muncul di terminal
+echo   1. Double-click "Claude Code on WhatsApp" di Desktop
+echo      (atau jalankan start.bat)
+echo   2. Browser kebuka -^> isi setup wizard 5 langkah
+echo   3. Scan QR WhatsApp yang muncul di terminal (CUKUP SEKALI)
 echo.
-choice /c YN /m "Start sekarang"
-if errorlevel 2 exit /b 0
-call "%ROOT%\start.bat"
+echo   Dashboard:
+echo     - Admin    : http://localhost:3458
+echo     - Futsal   : http://localhost:3457
+echo.
+set /p "DOSTART=Jalankan sekarang? (Y/N): "
+if /i "%DOSTART%"=="Y" (
+    call "%ROOT%\start.bat"
+) else (
+    echo OK. Jalankan kapan saja via shortcut di Desktop.
+    echo.
+    pause
+)

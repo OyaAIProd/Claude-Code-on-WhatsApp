@@ -26,9 +26,10 @@ function startService(svc) {
   proc.stderr.on("data", (d) => {
     d.toString().split("\n").forEach(line => { if (line.trim()) process.stdout.write(`${svc.color}[${svc.label}]${COLORS.reset} ${line}\n`); });
   });
-  proc.on("close", (code) => {
-    console.log(`${svc.color}[${svc.label}]${COLORS.reset} exited code=${code}`);
-    if (!shuttingDown && code !== 0 && code !== null) {
+  proc.on("close", (code, signal) => {
+    console.log(`${svc.color}[${svc.label}]${COLORS.reset} exited code=${code}${signal ? " signal=" + signal : ""}`);
+    const killedBySignal = signal === "SIGTERM" || signal === "SIGKILL" || code === 143 || code === 137;
+    if (!shuttingDown && !killedBySignal && code !== 0 && code !== null) {
       console.log(`${svc.color}[${svc.label}]${COLORS.reset} restart in 3s...`);
       setTimeout(() => startService(svc), 3000);
     }

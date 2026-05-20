@@ -1258,20 +1258,27 @@ async function handleMessage(m) {
   }
 }
 
+let reconnectAttempts = 0;
+let qrShownOnce = false;
+let isConnected = false;
+
 async function start() {
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
   const { version } = await fetchLatestBaileysVersion();
+  const hasAuth = !!state.creds?.registered;
 
   sock = makeWASocket({
     version, auth: state, logger,
     printQRInTerminal: false,
-    browser: ["Claude Code WA Bridge", "Chrome", "1.0"],
+    browser: ["Ubuntu", "Chrome", "120.0.0"],
     syncFullHistory: false,
-    markOnlineOnConnect: true,
+    markOnlineOnConnect: false,
     connectTimeoutMs: 60000,
-    defaultQueryTimeoutMs: 60000,
-    keepAliveIntervalMs: 30000,
-    retryRequestDelayMs: 2000
+    defaultQueryTimeoutMs: 0,
+    keepAliveIntervalMs: 25000,
+    retryRequestDelayMs: 2000,
+    emitOwnEvents: false,
+    generateHighQualityLinkPreview: false
   });
 
   sock.ev.on("creds.update", saveCreds);
@@ -1279,38 +1286,60 @@ async function start() {
   sock.ev.on("connection.update", (update) => {
     const { connection, lastDisconnect, qr } = update;
     if (qr) {
-      console.log("\n📱 Scan QR di WhatsApp HP lo:\n");
+      qrShownOnce = true;
+      console.log("\n📱 SCAN QR INI DI WHATSAPP HP LO (cukup sekali):\n");
       qrcode.generate(qr, { small: true });
-      console.log("\n   WhatsApp → Settings → Linked Devices → Link a Device → Scan\n");
+      console.log("\n   WhatsApp → Setelan → Perangkat Tertaut → Tautkan Perangkat → Scan QR di atas\n");
+      console.log("   (Auth tersimpan permanen di data/auth — gak perlu scan lagi setelah ini)\n");
+    }
+    if (connection === "connecting") {
+      console.log("🔌 Connecting ke WhatsApp...");
     }
     if (connection === "open") {
+      isConnected = true;
+      reconnectAttempts = 0;
       botJid = sock.user?.id ? jidNormalizedUser(sock.user.id) : null;
-      console.log(`✅ Connected: ${botJid || sock.user?.id}`);
+      console.log(`✅ TERHUBUNG: ${botJid || sock.user?.id}`);
       console.log(`👑 Bosses: ${listBosses().length}`);
+      console.log(`💬 Bot siap. Kirim pesan ke nomor bot dari HP lo.`);
     }
     if (connection === "close") {
+      isConnected = false;
       const reason = lastDisconnect?.error?.output?.statusCode;
-      const shouldReconnect = reason !== DisconnectReason.loggedOut;
-      console.log(`❌ Closed. reason=${reason} reconnect=${shouldReconnect}`);
-      if (shouldReconnect) setTimeout(start, 3000);
-      else console.log("⚠️  Logged out. Hapus data/auth + restart.");
+      const reasonName = Object.keys(DisconnectReason).find(k => DisconnectReason[k] === reason) || "unknown";
+
+      if (reason === DisconnectReason.loggedOut) {
+        console.log("⚠️  LOGGED OUT dari WhatsApp. Auth invalid.");
+        console.log("   Hapus folder data/auth lalu restart untuk scan QR baru.");
+        return;
+      }
+      if (reason === DisconnectReason.connectionReplaced) {
+        console.log("⚠️  Koneksi diambil alih device lain. Mungkin ada 2 instance jalan.");
+        console.log("   Pastikan cuma 1 bot running. Stop yang lain dulu.");
+        return;
+      }
+
+      reconnectAttempts++;
+      const delay = Math.min(3000 * reconnectAttempts, 30000);
+      console.log(`❌ Koneksi putus (${reasonName}/${reason}). Reconnect #${reconnectAttempts} dalam ${delay/1000}s...`);
+      setTimeout(() => start().catch(e => console.error("reconnect fail:", e.message)), delay);
     }
   });
 
   sock.ev.on("messages.upsert", (m) => {
     handleMessage(m).catch(err => console.error("handleMessage:", err.message));
   });
-
-  process.on("uncaughtException", (err) => {
-    if (/Timed Out|Request Time-out|init queries/i.test(err.message || "")) return;
-    console.error("uncaughtException:", err.message);
-  });
-  process.on("unhandledRejection", (err) => {
-    const m = err?.message || String(err);
-    if (/Timed Out|Request Time-out|init queries/i.test(m)) return;
-    console.error("unhandledRejection:", m);
-  });
 }
+
+process.on("uncaughtException", (err) => {
+  if (/Timed Out|Request Time-out|init queries|rate-overlimit|Connection Closed/i.test(err.message || "")) return;
+  console.error("uncaughtException:", err.message);
+});
+process.on("unhandledRejection", (err) => {
+  const m = err?.message || String(err);
+  if (/Timed Out|Request Time-out|init queries|rate-overlimit|Connection Closed/i.test(m)) return;
+  console.error("unhandledRejection:", m);
+});
 
 async function registerCommands() {
   if (!sock) return;
