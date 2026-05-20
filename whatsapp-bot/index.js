@@ -44,6 +44,8 @@ const translate = require("./translate");
 const knowledge = require("./knowledge");
 const buttonsMod = require("./buttons");
 const calendar = require("./calendar");
+const i18n = require("./i18n");
+const updater = require("./updater");
 
 const AUTH_DIR = path.join(__dirname, "data", "auth");
 fs.mkdirSync(AUTH_DIR, { recursive: true });
@@ -275,7 +277,8 @@ const BOT_LOCAL_COMMANDS = new Set([
   "/lang", "/translate", "/budget", "/budgets",
   "/language", "/import", "/imports", "/import-delete",
   "/pilih", "/pick", "/remembered", "/forget",
-  "/event", "/events", "/ics", "/cal"
+  "/event", "/events", "/ics", "/cal",
+  "/ui-lang", "/uilang", "/version", "/update-check"
 ]);
 
 async function handleCommand(chatId, senderJid, text, isGroup, msg) {
@@ -424,6 +427,38 @@ async function handleCommand(chatId, senderJid, text, isGroup, msg) {
     if (!found.length) return sendText(chatId, `❌ Gak ada pesan dengan "${argText}"`, msg);
     return sendText(chatId, `🔍 *"${argText}":*\n\n${found.map(f => `• *${f.sender_name || "?"}*: ${(f.text || "").slice(0, 100)}`).join("\n")}`, msg);
   }
+  if (cmd === "/ui-lang" || cmd === "/uilang") {
+    const langs = i18n.availableLangs();
+    if (!argText) {
+      const cur = i18n.getLang(chatId);
+      return sendText(chatId, `🌐 *UI Language:* ${cur}\n\nAvailable: ${langs.join(", ")}\n\nChange: /ui-lang <code>\nApplies to: bot reply texts, system prompts, error messages`, msg);
+    }
+    if (!boss) return sendText(chatId, "❌ Boss only.", msg);
+    if (!i18n.setLang(chatId, argText)) return sendText(chatId, `❌ Invalid lang: ${argText}. Available: ${langs.join(", ")}`, msg);
+    audit.log({ chat_id: chatId, sender_jid: senderJid, action: "ui_lang_set", target: argText });
+    return sendText(chatId, `✅ UI Language → *${argText}*`, msg);
+  }
+
+  if (cmd === "/version") {
+    const s = updater.getStatus();
+    const text =
+      `📦 *Bot Version*\n` +
+      `Current: v${s.current_version}\n` +
+      `Latest: ${s.latest_version ? "v" + s.latest_version : "(unknown)"}\n` +
+      `Update available: ${s.update_available ? "🆕 YES" : "✅ NO"}\n` +
+      `Last checked: ${s.last_checked_at || "(never)"}\n` +
+      `Repo: ${s.repo}` +
+      (s.update_available ? `\n\nUpdate via: ./update.sh atau update.bat` : "");
+    return sendText(chatId, text, msg);
+  }
+
+  if (cmd === "/update-check") {
+    if (!boss) return sendText(chatId, "❌ Boss only.", msg);
+    await sendText(chatId, "⏳ Checking for updates...", msg);
+    const r = await updater.checkForUpdate();
+    return sendText(chatId, r ? `📦 Current: v${r.current}\nLatest: v${r.latest}\n${r.hasUpdate ? "🆕 Update available!" : "✅ Up to date"}` : "❌ Check failed", msg);
+  }
+
   if (cmd === "/language") {
     const all = translate.listLangs();
     if (!argText) {
@@ -1293,6 +1328,11 @@ async function registerCommands() {
   console.log(`Bosses (${bossesNow.length}): ${bossesNow.map(b => b.jid).join(", ") || "(none)"}`);
   try { require("./admin/server"); }
   catch (err) { console.error("⚠️  Admin dashboard fail:", err.message); }
+
+  try {
+    const notify = require("./notify");
+    updater.startUpdater(notify.sendNotification);
+  } catch (err) { console.error("updater start:", err.message); }
 
   startProfileGenerator();
   userProfiles.startUserProfileGenerator();

@@ -1,5 +1,5 @@
 {
-  "name": "paper-trading-whatsapp-bot",
+  "name": "claude-code-on-whatsapp",
   "version": "1.0.0",
   "description": "WhatsApp bridge ke Claude Code (Baileys)",
   "main": "index.js",

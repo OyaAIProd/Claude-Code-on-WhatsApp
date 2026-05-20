@@ -74,3 +74,4 @@ coverage/
 # Misc
 *.tmp
 .cache/
+.claude/

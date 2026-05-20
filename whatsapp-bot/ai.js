@@ -13,6 +13,7 @@ const translateMod = require("./translate");
 const { isBoss } = require("./bosses");
 const knowledge = require("./knowledge");
 const buttonsMod = require("./buttons");
+const i18n = require("./i18n");
 
 const CLAUDE_BIN = process.env.CLAUDE_BIN || "claude";
 const DEFAULT_CWD = process.env.CLAUDE_DEFAULT_CWD || os.homedir();
@@ -409,7 +410,10 @@ async function streamMessage(userText, chatId, contextMessages = [], isGroup = f
     }
   }
 
-  let systemPrompt = (isGroup ? APPEND_SYSTEM_GROUP : APPEND_SYSTEM_DM) + buildContext(contextMessages, isGroup);
+  const uiLang = i18n.getLang(chatId);
+  const baseSystem = isGroup ? APPEND_SYSTEM_GROUP : APPEND_SYSTEM_DM;
+  const langHeader = uiLang === "en" ? `\n\n🌐 OUTPUT LANGUAGE: Reply primarily in ENGLISH (user changed UI to en). Override Indonesian persona to English casual.\n` : "";
+  let systemPrompt = baseSystem + langHeader + buildContext(contextMessages, isGroup);
 
   if (cfg?.preferred_lang) {
     const langName = translateMod.LANG_NAMES[cfg.preferred_lang] || cfg.preferred_lang;
