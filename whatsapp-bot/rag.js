@@ -11,15 +11,24 @@ function escapeFts(q) {
     .join(" OR ");
 }
 
-function searchImagesByDescription(query, { limit = 6, chatId = null } = {}) {
+const IMG_STOPWORDS = new Set(["yang","foto","gambar","image","picture","photo","mana","tadi","kemarin","tentang","soal","apa","itu","ini","dong","coba","kirim","lihat","liat","show","cari","carikan","cariin"]);
+
+function searchImagesByDescription(query, { limit = 3, chatId = null } = {}) {
   if (!query) return [];
-  const tokens = String(query).toLowerCase().split(/\s+/).filter(t => t.length >= 3);
+  const tokens = [...new Set(
+    String(query).toLowerCase().split(/\s+/)
+      .filter(t => t.length >= 3 && !IMG_STOPWORDS.has(t))
+  )];
   if (!tokens.length) return [];
-  const likes = tokens.map(() => "LOWER(vision_desc) LIKE ?").join(" OR ");
-  const params = tokens.map(t => `%${t}%`);
-  let sql = `SELECT id, chat_id, chat_name, sender_jid, sender_name, text, timestamp, is_group, media_filename, media_path, media_caption, vision_desc, from_me FROM messages WHERE vision_desc IS NOT NULL AND (${likes})`;
+  const field = "LOWER(IFNULL(vision_desc,'') || ' ' || IFNULL(media_caption,''))";
+  const scoreExpr = tokens.map(() => `(CASE WHEN ${field} LIKE ? THEN 1 ELSE 0 END)`).join(" + ");
+  const whereOr = tokens.map(() => `${field} LIKE ?`).join(" OR ");
+  const likeParams = tokens.map(t => `%${t}%`);
+  // params: scoreExpr likes (SELECT) + whereOr likes (WHERE) + [chatId] + limit
+  const params = [...likeParams, ...likeParams];
+  let sql = `SELECT id, chat_id, chat_name, sender_jid, sender_name, text, timestamp, is_group, media_filename, media_path, media_caption, vision_desc, from_me, (${scoreExpr}) AS match_score FROM messages WHERE vision_desc IS NOT NULL AND (${whereOr})`;
   if (chatId) { sql += " AND chat_id = ?"; params.push(chatId); }
-  sql += " ORDER BY timestamp DESC LIMIT ?";
+  sql += " ORDER BY match_score DESC, timestamp DESC LIMIT ?";
   params.push(limit);
   try { return db.prepare(sql).all(...params); } catch (err) { console.error("img search:", err.message); return []; }
 }

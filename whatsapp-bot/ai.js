@@ -446,17 +446,20 @@ async function streamMessage(userText, chatId, contextMessages = [], isGroup = f
     }
   } catch {}
 
-  if (/\b(foto|gambar|image|picture|pict|pic|photo)\b/i.test(userText)) {
+  // Image recall: only fire when query both mentions an image AND has recall/question intent.
+  // Keeps token cost low — inject max 3 ranked matches, short descriptions only.
+  const IMG_WORD = /\b(foto|gambar|image|picture|photo)\b/i;
+  const IMG_RECALL = /(mana|tadi|kemarin|yang|itu|inget|ingat|cari|carikan|cariin|kirim|show|liat|lihat|tunjuk|soal|tentang|\?)/i;
+  if (IMG_WORD.test(userText) && IMG_RECALL.test(userText)) {
     try {
-      const imgMatches = rag.searchImagesByDescription(userText, { limit: 6 });
+      const imgMatches = rag.searchImagesByDescription(userText, { limit: 3 });
       if (imgMatches.length) {
         const lines = imgMatches.map((m, i) => {
-          const time = new Date(m.timestamp * 1000).toISOString().slice(0, 16).replace("T", " ");
           const sender = m.from_me ? "[BOT]" : (m.sender_name || "?");
-          const where = m.is_group ? `group "${m.chat_name}"` : `DM ${m.chat_name}`;
-          return `${i + 1}. [${time}] ${sender} @ ${where}\n   🖼️ ${m.vision_desc?.slice(0, 200) || "?"}\n   PATH=${m.media_path}${m.media_caption ? ` | caption: "${m.media_caption}"` : ""}`;
+          const desc = (m.vision_desc || "").replace(/\s+/g, " ").slice(0, 120);
+          return `${i + 1}. ${sender}: ${desc}${m.media_caption ? ` (cap: "${m.media_caption.slice(0, 40)}")` : ""}\n   PATH=${m.media_path}`;
         });
-        systemPrompt += `\n\n🖼️ IMAGE SEARCH RESULTS (matched user query):\n${lines.join("\n")}\n--- END IMAGES ---\n\nKalau user nanya soal foto, JAWAB pakai DESCRIPTION ini + cite siapa kirim. Kalau butuh detail lebih, Read PATH tersebut.\n`;
+        systemPrompt += `\n\n🖼️ IMAGE MATCHES (top ${imgMatches.length}):\n${lines.join("\n")}\nJawab dari deskripsi ini + cite pengirim. Butuh detail → Read PATH.\n`;
         onEvent({ type: "tool_use", name: "image_search", input: {}, label: `🖼️ ${imgMatches.length} image match` });
       }
     } catch {}

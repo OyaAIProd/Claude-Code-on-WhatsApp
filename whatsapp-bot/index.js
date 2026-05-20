@@ -290,18 +290,42 @@ async function handleCommand(chatId, senderJid, text, isGroup, msg) {
   if (!BOT_LOCAL_COMMANDS.has(cmd)) return false;
 
   if (cmd === "/start" || cmd === "/help") {
+    const topic = argText.toLowerCase().replace(/^\//, "");
+    if (topic) {
+      const HELP_TOPICS = {
+        session: `📂 *SESSION (boss)*\n/sessions — list semua session\n/new [nama] — bikin session baru\n/resume <n> — pindah ke session n\n/rename <nama> — ganti nama current\n/delete <n> — hapus session n\n/reset — drop current (next msg bikin baru)`,
+        setup: `⚙️ *SETUP (boss)*\n/model [sonnet|opus|haiku] — ganti model\n/effort [low|medium|high|xhigh|max] — depth reasoning\n/safe on|off — konfirmasi sebelum action risky\n/permission <mode> — bypassPermissions/default/plan/dll\n/cd <path> • /pwd • /home — working dir`,
+        rag: `🧠 *MEMORY & SEARCH*\n/search <kata> — cari di SEMUA group/DM\n/whosaid <kata> — siapa pernah bilang\n/summarize [N] — ringkas N pesan terakhir\n/recent [N] — N pesan terakhir\n/topics — daftar group + topiknya\n/profile — profil group ini\n/profile-gen — regen profil group (boss)\n/embedstatus • /embed-backfill — vector index`,
+        file: `📎 *FILE*\n/files — list file di chat ini\n/send <path> — kirim file dari disk\n/analyze <path> — analisa isi file\nKirim PDF/DOCX/XLSX/PPTX/foto → auto-extract.\nMinta bikin file → bot generate native (bukan HTML).`,
+        lang: `🌐 *BAHASA*\n/lang — set bahasa reply Claude\n/language — list 19 bahasa\n/translate on|off — auto-translate\n/ui-lang id|en — bahasa UI bot/menu`,
+        budget: `💰 *BUDGET & AUDIT (boss)*\n/budget [jid] — lihat budget user\n/budgets — semua budget\n/audit [N] — log aksi\n/pii — toggle deteksi data sensitif\n/backup — backup DB manual`,
+        auto: `⏰ *OTOMASI (boss)*\n/remind <waktu> <pesan> — reminder\n/reminders — list reminder\n/cron — jadwal berulang\n/event • /events • /ics • /cal — kalender\n/wf • /workflow • /workflows — mini-workflow\n/plugins • /plugin-reload — plugin`,
+        admin: `👑 *ADMIN (boss)*\n/boss-add <nomor> • /boss-remove • /list-bosses\n/list-chats — semua chat\n/dm-on|off — bot balas DM\n/listen-on|off — bot dengar group ini\n/users • /userprofile — profil user\n/persona — ganti gaya bot\n/version • /update-check — cek update`,
+        button: `🔘 *PILIHAN & PREFERENSI*\n/pilih <n> atau /pick <n> — pilih opsi tombol\n/remembered — preferensi tersimpan\n/forget <pattern> — hapus preferensi`
+      };
+      const t = HELP_TOPICS[topic];
+      if (t) return sendText(chatId, t, msg);
+      return sendText(chatId, `❓ Topik "${topic}" gak ada.\nTopik: session, setup, rag, file, lang, budget, auto, admin, button`, msg);
+    }
     return sendText(chatId,
       `🤖 *Claude Code di WhatsApp*\n\n` +
-      `Full Claude Code agent di HP lo: file system, web, MCP, semua tool.\n\n` +
-      `📋 *Pakai biasa*: chat bebas / voice note Indonesia / slash command Claude (/init, /review, dll auto-forward)\n\n` +
-      `🎤 _Voice note auto-transkrip Whisper_\n\n` +
-      `*Umum:*\n/help • /summarize [N] • /whosaid <kata> • /recent [N] • /files\n/search <kata> (cari di SEMUA group) • /topics (daftar group + topik) • /profile (group ini)\n\n` +
-      `*Session (boss):*\n/sessions • /resume <n> • /new [nama] • /rename <nama> • /delete <n> • /reset\n\n` +
-      `*Setup (boss):*\n/model [sonnet|opus|haiku]\n/effort [low|medium|high|xhigh|max]\n/safe on|off (konfirmasi sebelum action)\n/permission <mode>\n/cd <path> • /pwd • /home\n\n` +
-      `*File ops:*\n/files • /send <path> • /analyze <path>\n\n` +
-      `*System:*\n/health (status bot)\n\n` +
-      `*Admin (boss):*\n/boss-add <number> • /boss-remove • /list-bosses\n/list-chats • /dm-on|off • /listen-on|off\n\n` +
-      `*ID:* /id`, msg);
+      `Full Claude Code agent di HP: file system, web, MCP, semua tool.\n\n` +
+      `📋 Chat bebas / voice note (auto-transkrip) / kirim file / slash command Claude (/init, /review, dll auto-forward).\n\n` +
+      `━━━━━━━━━━━━━━\n` +
+      `*Detail per kategori:* ketik \`/help <topik>\`\n` +
+      `• \`/help session\` — kelola session\n` +
+      `• \`/help setup\` — model, effort, safe, cd\n` +
+      `• \`/help rag\` — memory, search, summarize\n` +
+      `• \`/help file\` — kirim/analisa/bikin file\n` +
+      `• \`/help lang\` — bahasa & translate\n` +
+      `• \`/help budget\` — budget, audit, pii\n` +
+      `• \`/help auto\` — remind, cron, workflow, kalender\n` +
+      `• \`/help admin\` — boss, persona, listen\n` +
+      `• \`/help button\` — pilihan & preferensi\n` +
+      `━━━━━━━━━━━━━━\n` +
+      `*Sering dipakai:*\n` +
+      `/search <kata> • /summarize • /recent • /files\n` +
+      `/model • /effort • /sessions • /new • /health • /id`, msg);
   }
   if (cmd === "/id") return sendText(chatId, `Chat ID: \`${chatId}\`\nSender JID: \`${senderJid}\``, msg);
 
@@ -1261,8 +1285,39 @@ async function handleMessage(m) {
 let reconnectAttempts = 0;
 let qrShownOnce = false;
 let isConnected = false;
+let reconnecting = false;
+const MAX_RECONNECT = 20;
+
+function scheduleReconnect(reasonName, reason) {
+  // Guard: stacked/dying sockets can emit multiple 'close' — only one reconnect in flight.
+  if (reconnecting) return;
+  reconnecting = true;
+  reconnectAttempts++;
+  if (reconnectAttempts > MAX_RECONNECT) {
+    console.log(`❌ Reconnect gagal ${MAX_RECONNECT}x berturut. Stop loop.`);
+    console.log("   Cek koneksi internet, lalu restart bot (start.bat).");
+    reconnecting = false;
+    return;
+  }
+  const delay = Math.min(3000 * reconnectAttempts, 30000);
+  console.log(`❌ Koneksi putus (${reasonName}/${reason}). Reconnect #${reconnectAttempts}/${MAX_RECONNECT} dalam ${delay / 1000}s...`);
+  setTimeout(() => {
+    reconnecting = false;
+    start().catch(e => {
+      console.error("reconnect fail:", e.message);
+      scheduleReconnect("start-error", -1);
+    });
+  }, delay);
+}
 
 async function start() {
+  // Cleanup previous socket so old listeners/keepalive timers don't stack (root cause of reconnect storms).
+  if (sock) {
+    try { sock.ev.removeAllListeners(); } catch {}
+    try { sock.ws?.close(); } catch {}
+    try { sock.end(undefined); } catch {}
+  }
+
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
   const { version } = await fetchLatestBaileysVersion();
   const hasAuth = !!state.creds?.registered;
@@ -1297,6 +1352,7 @@ async function start() {
     }
     if (connection === "open") {
       isConnected = true;
+      reconnecting = false;
       reconnectAttempts = 0;
       botJid = sock.user?.id ? jidNormalizedUser(sock.user.id) : null;
       console.log(`✅ TERHUBUNG: ${botJid || sock.user?.id}`);
@@ -1318,11 +1374,16 @@ async function start() {
         console.log("   Pastikan cuma 1 bot running. Stop yang lain dulu.");
         return;
       }
+      // restartRequired (515): normal setelah pairing — reconnect cepat, jangan dihitung sebagai gagal.
+      if (reason === DisconnectReason.restartRequired) {
+        console.log("🔄 Restart required (normal pasca-pairing). Reconnect cepat...");
+        if (reconnecting) return;
+        reconnecting = true;
+        setTimeout(() => { reconnecting = false; start().catch(e => console.error("restart fail:", e.message)); }, 1500);
+        return;
+      }
 
-      reconnectAttempts++;
-      const delay = Math.min(3000 * reconnectAttempts, 30000);
-      console.log(`❌ Koneksi putus (${reasonName}/${reason}). Reconnect #${reconnectAttempts} dalam ${delay/1000}s...`);
-      setTimeout(() => start().catch(e => console.error("reconnect fail:", e.message)), delay);
+      scheduleReconnect(reasonName, reason);
     }
   });
 
