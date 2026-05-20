@@ -1,0 +1,845 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Claude Code on WhatsApp — Video Demo</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;900&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+  <script type="text/babel" src="animations.jsx"></script>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    html,body{width:100%;height:100%;background:#000;overflow:hidden;font-family:'Inter',sans-serif}
+    @keyframes bounce{0%,80%,100%{transform:translateY(0)}40%{transform:translateY(-5px)}}
+    @keyframes glowpulse{0%,100%{box-shadow:0 0 24px rgba(38,166,154,.35),0 0 0 1px rgba(38,166,154,.15)}50%{box-shadow:0 0 52px rgba(38,166,154,.65),0 0 0 1px rgba(38,166,154,.3)}}
+    @keyframes wave{0%,100%{transform:scaleY(.25)}50%{transform:scaleY(1)}}
+    @keyframes cblink{0%,100%{opacity:1}50%{opacity:0}}
+    @keyframes scan{0%{transform:translateY(-60px);opacity:.05}100%{transform:translateY(780px);opacity:.01}}
+    @keyframes tabin{from{opacity:0;transform:translateY(-5px)}to{opacity:1;transform:translateY(0)}}
+    @keyframes popin{0%{transform:scale(.72) translateY(8px);opacity:0}65%{transform:scale(1.04) translateY(-2px);opacity:1}100%{transform:scale(1) translateY(0);opacity:1}}
+    @keyframes shimmer{0%,100%{opacity:.5}50%{opacity:1}}
+    @keyframes orbit{from{transform:rotate(0deg) translateX(30px) rotate(0deg)}to{transform:rotate(360deg) translateX(30px) rotate(-360deg)}}
+    @keyframes rotateglow{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { Stage, Sprite, useTime, clamp, Easing } = window;
+
+// ─── DESIGN TOKENS ───────────────────────────────────────────────────
+const C = {
+  bg:'#0a0e1a', bg2:'#0f1522', card:'#131d2e', border:'#1c2b3e',
+  accent:'#26a69a', accentDim:'#1a7a70', accentBg:'rgba(38,166,154,.08)',
+  warn:'#ffa726', danger:'#ef5350', success:'#66bb6a',
+  text:'#e8ecf5', dim:'#8fa3b8', mono:"'JetBrains Mono',monospace",
+  waB:'#0d1418', waH:'#1f2c34', waU:'#005c4b', waBot:'#202c33',
+};
+
+// ─── ANIMATION HELPERS ───────────────────────────────────────────────
+const cr = (v) => clamp(v,0,1);
+const fi  = (t,at,dur=.4) => cr((t-at)/dur);          // fade in 0→1
+const fo  = (t,at,dur=.4) => cr(1-(t-at)/dur);         // fade out 1→0
+const exp = Easing.easeOutExpo;
+const spr = Easing.easeOutBack;
+
+function eIn(t,at,dur=.5){
+  const p=exp(cr((t-at)/dur));
+  return{opacity:cr((t-at)/(dur*.7)),transform:`translateY(${(1-p)*18}px)`};
+}
+function eUp(t,at,dur=.5){
+  const p=exp(cr((t-at)/dur));
+  return{opacity:cr((t-at)/(dur*.7)),transform:`translateY(${(1-p)*-16}px)`};
+}
+function ePop(t,at,dur=.45){
+  if(t<at) return{opacity:0,transform:'scale(.7)'};
+  const p=spr(cr((t-at)/dur));
+  return{opacity:cr((t-at)/(dur*.55)),transform:`scale(${.7+p*.3})`};
+}
+function eLeft(t,at,dur=.5){
+  const p=exp(cr((t-at)/dur));
+  return{opacity:cr((t-at)/(dur*.7)),transform:`translateX(${(1-p)*-22}px)`};
+}
+function eRight(t,at,dur=.5){
+  const p=exp(cr((t-at)/dur));
+  return{opacity:cr((t-at)/(dur*.7)),transform:`translateX(${(1-p)*22}px)`};
+}
+
+// ─── WAVEFORM (static heights avoid random re-renders) ────────────────
+const WH=[8,14,20,12,22,10,18,24,13,8,20,14,9,22,17,8,15,20,11,9];
+
+// ─── PHONE FRAME ─────────────────────────────────────────────────────
+function Phone({children,style}){
+  return(
+    <div style={{
+      position:'relative',width:296,height:588,
+      borderRadius:46,background:'#0b0b18',
+      border:'8px solid #18182a',
+      boxShadow:'0 0 0 1px #24244a,0 44px 110px rgba(0,0,0,.9),0 0 70px rgba(38,166,154,.06),inset 0 1px 0 rgba(255,255,255,.04)',
+      overflow:'hidden',flexShrink:0,...style,
+    }}>
+      {/* Dynamic island */}
+      <div style={{position:'absolute',top:9,left:'50%',transform:'translateX(-50%)',width:96,height:22,background:'#09091a',borderRadius:13,zIndex:30,display:'flex',alignItems:'center',justifyContent:'center',gap:8}}>
+        <div style={{width:7,height:7,borderRadius:'50%',background:'#141428'}}/>
+        <div style={{width:18,height:7,borderRadius:4,background:'#141428'}}/>
+      </div>
+      <div style={{width:'100%',height:'100%',background:C.waB,display:'flex',flexDirection:'column',overflow:'hidden'}}>
+        {/* Status bar */}
+        <div style={{height:34,minHeight:34,background:C.waB,display:'flex',alignItems:'flex-end',justifyContent:'space-between',padding:'0 18px 5px',fontSize:9.5,fontWeight:600,color:C.text,letterSpacing:'-.01em'}}>
+          <span>9:41</span>
+          <div style={{display:'flex',gap:4,alignItems:'center',fontSize:10}}><span style={{letterSpacing:-2}}>▐▐▐</span><span>WiFi</span><span>⚡</span></div>
+        </div>
+        {children}
+      </div>
+      {/* Home bar */}
+      <div style={{position:'absolute',bottom:8,left:'50%',transform:'translateX(-50%)',width:88,height:4,background:'rgba(255,255,255,.22)',borderRadius:2,zIndex:30}}/>
+    </div>
+  );
+}
+
+// ─── CHAT COMPONENTS ──────────────────────────────────────────────────
+function ChatHeader({name='Claude AI',sub='online · Claude Code'}){
+  return(
+    <div style={{background:C.waH,padding:'7px 11px',display:'flex',alignItems:'center',gap:9,borderBottom:'1px solid rgba(255,255,255,.04)',minHeight:47,flexShrink:0}}>
+      <span style={{color:C.dim,fontSize:17}}>←</span>
+      <div style={{width:32,height:32,borderRadius:'50%',background:'linear-gradient(135deg,#26a69a,#1a5e56)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:11,color:'#fff',fontWeight:900,flexShrink:0,animation:'glowpulse 3s infinite'}}>C°</div>
+      <div style={{flex:1}}>
+        <div style={{fontSize:13,fontWeight:700,color:C.text,letterSpacing:'-.01em'}}>{name}</div>
+        <div style={{fontSize:9.5,color:C.accent}}>{sub}</div>
+      </div>
+      <span style={{fontSize:14,color:C.dim}}>🔍</span><span style={{fontSize:14,color:C.dim,marginLeft:10}}>⋮</span>
+    </div>
+  );
+}
+
+function ChatArea({children}){
+  return(
+    <div style={{flex:1,padding:'6px 7px',display:'flex',flexDirection:'column',justifyContent:'flex-end',gap:3,overflowY:'hidden',background:C.waB}}>
+      {children}
+    </div>
+  );
+}
+
+function ChatInput({ph='Tulis pesan...'}){
+  return(
+    <div style={{background:C.waH,padding:'6px 9px',display:'flex',alignItems:'center',gap:8,minHeight:41,flexShrink:0,borderTop:'1px solid rgba(255,255,255,.04)'}}>
+      <div style={{flex:1,background:'#2a3942',borderRadius:20,padding:'5px 13px',fontSize:11,color:C.dim}}>{ph}</div>
+      <div style={{width:30,height:30,borderRadius:'50%',background:C.accent,display:'flex',alignItems:'center',justifyContent:'center',fontSize:11,color:'#fff'}}>🎤</div>
+    </div>
+  );
+}
+
+function MsgU({children,s}){
+  return(
+    <div style={{alignSelf:'flex-end',background:C.waU,borderRadius:'10px 10px 0 10px',padding:'6px 9px',maxWidth:'78%',fontSize:11,color:C.text,lineHeight:1.5,wordBreak:'break-word',...s}}>
+      {children}
+      <div style={{fontSize:8.5,color:'rgba(255,255,255,.35)',textAlign:'right',marginTop:2}}>9:41 ✓✓</div>
+    </div>
+  );
+}
+
+function MsgB({children,s,ac=false}){
+  return(
+    <div style={{alignSelf:'flex-start',background:ac?'rgba(38,166,154,.07)':C.waBot,borderLeft:ac?`2.5px solid ${C.accent}`:'none',borderRadius:ac?'0 10px 10px 0':'0 10px 10px 10px',padding:'6px 9px',maxWidth:'86%',fontSize:11,color:C.text,lineHeight:1.6,wordBreak:'break-word',fontFamily:C.mono,...s}}>
+      {children}
+      <div style={{fontSize:8.5,color:'rgba(255,255,255,.22)',marginTop:2}}>9:41</div>
+    </div>
+  );
+}
+
+function Dots(){
+  return(
+    <div style={{alignSelf:'flex-start',background:C.waBot,borderRadius:'0 10px 10px 10px',padding:'9px 13px',display:'flex',gap:5}}>
+      {[0,1,2].map(i=><div key={i} style={{width:6,height:6,borderRadius:'50%',background:C.dim,animation:`bounce 1.2s ${i*.2}s infinite`}}/>)}
+    </div>
+  );
+}
+
+function VNote(){
+  return(
+    <div style={{display:'flex',alignItems:'center',gap:8,minWidth:148}}>
+      <div style={{width:26,height:26,borderRadius:'50%',background:C.accent,display:'flex',alignItems:'center',justifyContent:'center',fontSize:10,color:'#fff'}}>▶</div>
+      <div style={{display:'flex',gap:2,alignItems:'center',flex:1}}>
+        {WH.map((h,i)=><div key={i} style={{width:2,height:h,background:C.accent,borderRadius:1,animation:`wave .8s ${i*.04}s infinite ease-in-out`,transformOrigin:'center'}}/>)}
+      </div>
+      <span style={{fontSize:9,color:C.dim}}>0:04</span>
+    </div>
+  );
+}
+
+function Rxn({e}){
+  return(
+    <div style={{alignSelf:'flex-end',fontSize:12,background:'rgba(255,255,255,.07)',border:`1px solid ${C.border}`,borderRadius:12,padding:'2px 7px',marginTop:1}}>{e}</div>
+  );
+}
+
+function BtnList({opts,tapI=null}){
+  return(
+    <div style={{alignSelf:'flex-start',background:C.waBot,borderRadius:'0 10px 10px 10px',padding:'7px 9px',maxWidth:'86%',fontFamily:C.mono,fontSize:10.5}}>
+      <div style={{fontSize:9.5,color:C.dim,marginBottom:4,fontStyle:'italic'}}>Pilih nomor:</div>
+      {opts.map((o,i)=>(
+        <div key={i} style={{display:'flex',gap:7,alignItems:'center',padding:'4px 7px',borderRadius:6,marginBottom:3,background:tapI===i?'rgba(38,166,154,.18)':'rgba(255,255,255,.04)',border:`1px solid ${tapI===i?C.accent:C.border}`,color:tapI===i?C.accent:C.text,transition:'all .3s'}}>
+          <span style={{opacity:.5}}>{i+1}.</span><span>{o}</span>
+          {tapI===i&&<span style={{marginLeft:'auto',fontSize:9,color:C.accent}}>← tap</span>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ─── LAPTOP FRAME ─────────────────────────────────────────────────────
+function Laptop({children,w=820}){
+  return(
+    <div style={{display:'flex',flexDirection:'column',alignItems:'center'}}>
+      <div style={{width:w,background:'#0b0b18',border:'7px solid #171728',borderRadius:'12px 12px 0 0',overflow:'hidden',boxShadow:'0 0 0 1px #222240,0 36px 90px rgba(0,0,0,.85),0 0 50px rgba(38,166,154,.04)'}}>
+        <div style={{background:'#111620',padding:'7px 12px',display:'flex',alignItems:'center',gap:6,borderBottom:`1px solid ${C.border}`}}>
+          {[C.danger,C.warn,C.success].map((c,i)=><div key={i} style={{width:10,height:10,borderRadius:'50%',background:c,opacity:.85}}/>)}
+          <div style={{flex:1,textAlign:'center',fontSize:10,color:C.dim,letterSpacing:'.02em'}}>localhost:3457 — ⚽ Futsal Dashboard</div>
+        </div>
+        {children}
+      </div>
+      <div style={{width:w+64,height:14,background:'linear-gradient(180deg,#161626,#0b0b18)',borderRadius:'0 0 4px 4px'}}/>
+      <div style={{width:210,height:5,background:'#111120',borderRadius:'0 0 10px 10px'}}/>
+    </div>
+  );
+}
+
+// ─── SHARED UI ────────────────────────────────────────────────────────
+function Chip({text,op=1}){
+  return(
+    <div style={{position:'absolute',top:26,left:'50%',transform:'translateX(-50%)',background:'rgba(38,166,154,.1)',border:'1px solid rgba(38,166,154,.25)',borderRadius:20,padding:'4px 18px',fontSize:10.5,color:C.accent,fontWeight:600,letterSpacing:'.13em',textTransform:'uppercase',opacity:op,transition:'opacity .5s',whiteSpace:'nowrap'}}>
+      {text}
+    </div>
+  );
+}
+
+function OvText({main,sub,op=1}){
+  return(
+    <div style={{position:'absolute',bottom:34,left:'50%',transform:'translateX(-50%)',textAlign:'center',opacity:op,transition:'opacity .6s',whiteSpace:'nowrap'}}>
+      {sub&&<div style={{fontSize:9.5,color:C.dim,letterSpacing:'.13em',textTransform:'uppercase',marginBottom:4}}>{sub}</div>}
+      <div style={{fontSize:15,fontWeight:700,color:C.text,letterSpacing:'-.02em'}}>{main}</div>
+    </div>
+  );
+}
+
+function FCard({icon,title,sub,t,at}){
+  const p=fi(t,at);
+  const ep=exp(p);
+  return(
+    <div style={{display:'flex',gap:12,alignItems:'flex-start',opacity:p,transform:`translateX(${(1-ep)*-24}px)`}}>
+      <div style={{width:36,height:36,borderRadius:10,background:'rgba(38,166,154,.1)',border:'1px solid rgba(38,166,154,.22)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:16,flexShrink:0}}>{icon}</div>
+      <div>
+        <div style={{fontSize:14,fontWeight:700,color:C.text,letterSpacing:'-.01em'}}>{title}</div>
+        <div style={{fontSize:10.5,color:C.dim,marginTop:2}}>{sub}</div>
+      </div>
+    </div>
+  );
+}
+
+function BgGrid(){
+  return(
+    <div style={{position:'absolute',inset:0,backgroundImage:'linear-gradient(rgba(38,166,154,.028) 1px,transparent 1px),linear-gradient(90deg,rgba(38,166,154,.028) 1px,transparent 1px)',backgroundSize:'44px 44px',pointerEvents:'none'}}/>
+  );
+}
+function BgGlow({x=640,y=360,op=.13}){
+  return(
+    <div style={{position:'absolute',left:x,top:y,width:640,height:640,transform:'translate(-50%,-50%)',background:`radial-gradient(circle,rgba(38,166,154,${op}) 0%,transparent 70%)`,pointerEvents:'none'}}/>
+  );
+}
+
+// ─── DASHBOARD TAB CONTENT ────────────────────────────────────────────
+function TabHome({lt}){
+  const kpis=[
+    {l:'Bookings',v:'487',c:C.accent},{l:'Members',v:'123',c:C.accent},
+    {l:'Revenue 30d',v:'Rp 45.2Jt',c:C.success},{l:'Expenses',v:'Rp 12.5Jt',c:C.warn},{l:'Profit 30d',v:'Rp 32.7Jt',c:C.success},
+  ];
+  return(
+    <div style={{padding:'13px 16px',display:'flex',flexDirection:'column',gap:12}}>
+      <div style={{display:'flex',gap:9}}>
+        {kpis.map((k,i)=>{const p=exp(cr((lt-i*.12)/.4));return(
+          <div key={i} style={{flex:1,background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:'11px 11px',opacity:p,transform:`translateY(${(1-p)*12}px)`}}>
+            <div style={{fontSize:8.5,color:C.dim,textTransform:'uppercase',letterSpacing:'.08em',marginBottom:5}}>{k.l}</div>
+            <div style={{fontSize:16,fontWeight:800,color:k.c,letterSpacing:'-.02em'}}>{k.v}</div>
+          </div>
+        );})}
+      </div>
+      <div style={{background:C.card,borderRadius:10,border:`1px solid ${C.border}`,overflow:'hidden',opacity:exp(cr((lt-.65)/.4))}}>
+        <div style={{padding:'8px 14px',borderBottom:`1px solid ${C.border}`,fontSize:11,fontWeight:600,color:C.text}}>P&amp;L Summary — 30 Hari</div>
+        {[['Lapangan 1','Rp 18.200.000',true],['Lapangan 2','Rp 15.400.000',true],['Lapangan 3','Rp 11.630.000',true],['Total Expenses','Rp 12.500.000',false]].map(([n,v,pos],i)=>(
+          <div key={i} style={{display:'flex',justifyContent:'space-between',padding:'6px 14px',borderBottom:i<3?`1px solid ${C.border}`:'none',fontSize:11,opacity:exp(cr((lt-.75-i*.08)/.35))}}>
+            <span style={{color:C.dim}}>{n}</span>
+            <span style={{color:pos?C.success:C.danger,fontFamily:C.mono}}>{pos?'+':'-'}{v}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function TabJadwal({lt}){
+  const slots=['07:00','09:00','11:00','13:00','15:00','17:00','19:00','21:00'];
+  const fields=['Lapangan 1','Lapangan 2','Lapangan 3'];
+  const st=[[1,0,1,1,0,1,0,1],[0,1,1,0,1,0,1,1],[1,1,0,1,0,0,1,0]];
+  return(
+    <div style={{padding:'13px 16px',opacity:exp(cr(lt/.35))}}>
+      <div style={{fontSize:11,fontWeight:600,color:C.text,marginBottom:10}}>Jadwal Lapangan — Hari Ini</div>
+      <div style={{display:'grid',gridTemplateColumns:'88px repeat(8,1fr)',gap:4}}>
+        <div/>
+        {slots.map(s=><div key={s} style={{fontSize:8.5,color:C.dim,textAlign:'center'}}>{s}</div>)}
+        {fields.map((f,fi)=>[
+          <div key={f} style={{fontSize:10,color:C.text,display:'flex',alignItems:'center',fontWeight:500}}>{f}</div>,
+          ...slots.map((_,si)=>(
+            <div key={`${f}${si}`} style={{height:30,borderRadius:5,background:st[fi][si]?'rgba(239,83,80,.11)':'rgba(102,187,106,.11)',border:`1px solid ${st[fi][si]?'rgba(239,83,80,.25)':'rgba(102,187,106,.25)'}`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:9,fontWeight:600,color:st[fi][si]?C.danger:C.success}}>
+              {st[fi][si]?'BOOKED':'OPEN'}
+            </div>
+          ))
+        ])}
+      </div>
+    </div>
+  );
+}
+
+function TabBookings({lt}){
+  const rows=[
+    ['#487','Tim Harimau','Lap. 1','19:00','Rp 200K','✓ Paid'],
+    ['#486','Tim Elang','Lap. 2','17:00','Rp 200K','✓ Paid'],
+    ['#485','Tim Putra','Lap. 3','15:00','Rp 180K','⏳ Pending'],
+    ['#484','Tim Garuda','Lap. 1','13:00','Rp 200K','✓ Paid'],
+    ['#483','Tim Rajawali','Lap. 2','11:00','Rp 200K','✓ Paid'],
+  ];
+  return(
+    <div style={{padding:'13px 16px'}}>
+      <div style={{fontSize:11,fontWeight:600,color:C.text,marginBottom:10}}>Recent Bookings</div>
+      <table style={{width:'100%',borderCollapse:'collapse',fontSize:11}}>
+        <thead><tr>{['ID','Tim','Lapangan','Jam','Bayar','Status'].map(h=><th key={h} style={{textAlign:'left',padding:'5px 8px',color:C.dim,borderBottom:`1px solid ${C.border}`,fontWeight:500,fontSize:10}}>{h}</th>)}</tr></thead>
+        <tbody>
+          {rows.map((r,i)=>{const p=exp(cr((lt-i*.1)/.3));return(
+            <tr key={i} style={{opacity:p}}>
+              {r.map((cell,j)=><td key={j} style={{padding:'7px 8px',color:j===0?C.accent:j===5?(cell.includes('✓')?C.success:C.warn):C.text,borderBottom:`1px solid ${C.border}`,fontFamily:j===0?C.mono:'inherit',fontSize:j===0?10:11}}>{cell}</td>)}
+            </tr>
+          );})}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function TabMembers({lt}){
+  const members=[
+    ['Budi Santoso','47 booking','Rp 9.4Jt'],['Andi Wijaya','38 booking','Rp 7.6Jt'],
+    ['Rini Kusuma','31 booking','Rp 6.2Jt'],['Doni Pratama','28 booking','Rp 5.6Jt'],
+    ['Sari Dewi','24 booking','Rp 4.8Jt'],
+  ];
+  return(
+    <div style={{padding:'13px 16px'}}>
+      <div style={{fontSize:11,fontWeight:600,color:C.text,marginBottom:10}}>Top Members — All Time</div>
+      <div style={{display:'flex',flexDirection:'column',gap:7}}>
+        {members.map((m,i)=>{const p=exp(cr((lt-i*.12)/.4));return(
+          <div key={i} style={{display:'flex',alignItems:'center',gap:12,background:C.card,borderRadius:9,padding:'9px 13px',border:`1px solid ${C.border}`,opacity:p,transform:`translateX(${(1-p)*-14}px)`}}>
+            <div style={{width:26,height:26,borderRadius:'50%',background:`hsl(${i*72+140},38%,26%)`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:10,color:'#fff',fontWeight:800}}>{i+1}</div>
+            <div style={{flex:1,fontSize:12,color:C.text,fontWeight:500}}>{m[0]}</div>
+            <div style={{fontSize:10,color:C.dim}}>{m[1]}</div>
+            <div style={{fontSize:11,color:C.success,fontFamily:C.mono,fontWeight:600}}>{m[2]}</div>
+          </div>
+        );})}
+      </div>
+    </div>
+  );
+}
+
+// ─── CHART SVG ────────────────────────────────────────────────────────
+function ChartSVG(){
+  const W=228,H=118;
+  const raw=[[62,80,55,75],[75,85,68,72],[72,78,60,62],[62,70,55,65],[65,75,60,70],[70,82,66,78],[78,88,74,76],[76,80,68,72],[72,84,70,82],[82,86,75,78],[78,85,72,80],[80,90,76,88],[88,92,82,86],[86,90,78,84],[84,88,75,80],[80,84,70,72],[72,78,65,68],[68,80,64,76],[76,86,72,84],[84,90,80,88],[88,94,84,90],[90,96,86,92],[92,98,88,94],[94,100,90,96],[96,100,88,92],[92,96,85,88],[88,94,80,84],[84,88,76,80],[80,86,72,78],[78,84,70,76]];
+  const step=W/raw.length;
+  const fibs=[{y:20,l:'1.000',col:'#ef5350'},{y:30,l:'.786',col:'#ff7043'},{y:42,l:'.618',col:'#ffa726'},{y:54,l:'.500',col:'#e0e0e0'},{y:63,l:'.382',col:'#26a69a'},{y:73,l:'.236',col:'#66bb6a'}];
+  return(
+    <div style={{background:'#0c1910',borderRadius:10,border:'1px solid rgba(38,166,154,.22)',padding:'10px 12px'}}>
+      <div style={{fontSize:10,color:C.accent,fontFamily:C.mono,marginBottom:6,fontWeight:600}}>BTC/IDR · 30d + Fibonacci</div>
+      <svg width={W} height={H} style={{display:'block'}}>
+        {[.2,.4,.6,.8].map((r,i)=><line key={i} x1={0} y1={H*r} x2={W} y2={H*r} stroke="rgba(255,255,255,.05)" strokeWidth="1"/>)}
+        {fibs.map((f,i)=>(
+          <g key={i}>
+            <line x1={0} y1={f.y} x2={W} y2={f.y} stroke={f.col} strokeWidth=".8" strokeDasharray="3,4" opacity=".45"/>
+            <text x={W-2} y={f.y-2} fill={f.col} fontSize="6.5" textAnchor="end" opacity=".7">{f.l}</text>
+          </g>
+        ))}
+        {raw.map(([o,h,l,c],i)=>{
+          const x=i*step+step*.2,w=step*.62,bull=c>=o;
+          const col=bull?C.success:C.danger;
+          const by=H-Math.max(o,c),bh=Math.max(Math.abs(c-o),2);
+          return(
+            <g key={i}>
+              <line x1={x+w/2} y1={H-h} x2={x+w/2} y2={H-l} stroke={col} strokeWidth=".9" opacity=".55"/>
+              <rect x={x} y={by} width={w} height={bh} fill={bull?'rgba(102,187,106,.75)':'rgba(239,83,80,.75)'} stroke={col} strokeWidth=".5"/>
+            </g>
+          );
+        })}
+        <text x={4} y={16} fill={C.danger} fontSize="7" opacity=".8">R: 1.42M</text>
+        <text x={4} y={H-5} fill={C.accent} fontSize="7" opacity=".8">S: 1.32M</text>
+        <text x={raw.length*step*.83} y={12} fill={C.warn} fontSize="7" opacity="1">DOJI</text>
+      </svg>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// SCENE 1 — INTRO
+// ══════════════════════════════════════════════════════════════════════
+function SceneIntro(){
+  const t=useTime();
+  const badges=['105 MCP Tools','RAG + Vector','Voice · Vision · Files','19 Bahasa · 6 Persona','100% Termux Android'];
+  return(
+    <div style={{position:'absolute',inset:0,display:'flex',alignItems:'center',justifyContent:'center',flexDirection:'column',gap:26}}>
+      <BgGrid/>
+      <BgGlow x={640} y={360} op={.16}/>
+      {/* Scan line */}
+      <div style={{position:'absolute',inset:0,overflow:'hidden',pointerEvents:'none'}}>
+        <div style={{position:'absolute',left:0,right:0,height:2,background:'linear-gradient(90deg,transparent,rgba(38,166,154,.18),transparent)',animation:'scan 5s linear infinite'}}/>
+      </div>
+      {/* Logo */}
+      <div style={{...ePop(t,.15,.75),display:'flex',flexDirection:'column',alignItems:'center',gap:18}}>
+        <div style={{position:'relative',width:90,height:90}}>
+          {/* Orbit ring */}
+          <div style={{position:'absolute',inset:-18,borderRadius:'50%',border:'1px solid rgba(38,166,154,.12)'}}/>
+          <div style={{position:'absolute',inset:-18,borderRadius:'50%',border:'1px dashed rgba(38,166,154,.06)',animation:'rotateglow 12s linear infinite'}}/>
+          <div style={{position:'absolute',top:'-14px',left:'50%',transform:'translateX(-50%)',width:6,height:6,borderRadius:'50%',background:C.accent,opacity:.7,animation:'orbit 6s linear infinite'}}/>
+          <div style={{width:90,height:90,borderRadius:24,background:'linear-gradient(145deg,#2dbbae,#1a6a5e)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:36,fontWeight:900,color:'#fff',letterSpacing:'-.03em',animation:'glowpulse 2.5s infinite',position:'relative'}}>C°</div>
+        </div>
+        <div style={{textAlign:'center',...eIn(t,.45,.6)}}>
+          <div style={{fontSize:40,fontWeight:900,color:C.text,letterSpacing:'-.04em',lineHeight:1.05}}>
+            Claude Code <span style={{color:C.accent}}>on WhatsApp</span>
+          </div>
+          <div style={{fontSize:13,color:C.dim,marginTop:10,letterSpacing:'.17em',textTransform:'uppercase',fontWeight:400}}>
+            AI di WhatsApp lo · Trading · Memory · Business
+          </div>
+        </div>
+      </div>
+      {/* Badges */}
+      <div style={{display:'flex',gap:10,flexWrap:'wrap',justifyContent:'center',...eIn(t,.85,.6)}}>
+        {badges.map((b,i)=>(
+          <div key={i} style={{background:'rgba(38,166,154,.07)',border:'1px solid rgba(38,166,154,.2)',borderRadius:24,padding:'5px 16px',fontSize:11.5,color:C.accent,letterSpacing:'.04em',fontWeight:500}}>{b}</div>
+        ))}
+      </div>
+      <div style={{fontSize:11,color:C.dim,letterSpacing:'.1em',...eIn(t,1.3,.6)}}>
+        Built with <span style={{color:C.accent}}>Claude Code</span> · Node.js · Baileys · SQLite · Termux
+      </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// SCENE 2 — PHONE: VOICE → STREAM → VERDICT → BUTTONS
+// ══════════════════════════════════════════════════════════════════════
+function ScenePhone(){
+  const t=useTime();
+  const lt=t-5;
+  const pp=exp(cr(lt/.8));
+
+  // Show times (lt-based)
+  const T={voice:1,rx:1.7,ty:2.2,pr:2.7,p1:3.2,p2:3.7,p3:4.2,p4:4.7,p5:5.2,done:6.1,verd:7.4,btn:9.4,tap:11,rep:11.6,conf:12.3};
+
+  const fcards=[
+    {at:1,icon:'🎤',title:'Voice Command',sub:'Groq Whisper transcription — instant'},
+    {at:2.8,icon:'🔧',title:'Multi-Tool Reasoning',sub:'Price + Indicators + ML + News sentiment'},
+    {at:7.4,icon:'🛑',title:'Independent AI',sub:'AI bisa NOLAK perintah — bukan budak order'},
+    {at:9.4,icon:'⚡',title:'Interactive Buttons',sub:'Decision memory · auto-execute on reply'},
+  ];
+
+  return(
+    <div style={{position:'absolute',inset:0,display:'flex',alignItems:'center',justifyContent:'center'}}>
+      <BgGrid/>
+      <BgGlow x={880} y={360} op={.1}/>
+      <Chip text="01 · Voice Command → AI Verdict" op={fi(lt,0,.5)}/>
+
+      {/* Feature sidebar left */}
+      <div style={{position:'absolute',left:68,top:'50%',transform:'translateY(-50%)',display:'flex',flexDirection:'column',gap:22,width:340}}>
+        {fcards.map((f,i)=><FCard key={i} {...f} t={lt} at={f.at}/>)}
+      </div>
+
+      {/* Phone */}
+      <Phone style={{position:'absolute',left:'50%',top:'50%',transform:`translate(-50%,-50%) scale(${.85+pp*.15}) translateY(${(1-pp)*28}px)`,opacity:pp}}>
+        <ChatHeader/>
+        <ChatArea>
+          {lt>T.voice&&<MsgU s={eIn(lt,T.voice,.4)}><VNote/><div style={{fontSize:9,color:'rgba(255,255,255,.4)',marginTop:4,fontStyle:'italic'}}>🎤 "Beli Bitcoin 500rb, kasih analisa dulu"</div></MsgU>}
+          {lt>T.rx&&<div style={{alignSelf:'flex-end',...eIn(lt,T.rx,.3)}}><Rxn e={lt>T.done?'✅':'⏳'}/></div>}
+          {lt>T.ty&&lt<T.pr+.4&&<Dots/>}
+          {lt>T.pr&&(
+            <MsgB s={eIn(lt,T.pr,.4)}>
+              {lt<T.done?<span style={{color:C.warn}}>⏳ memproses {Math.min(((lt-T.pr)*.9+.1).toFixed(1),5.8)}s...</span>:<span style={{color:C.success}}>✅ 4 tools · 5.2s</span>}
+              {lt>T.p1&&<><br/><span style={{color:C.accent}}>🎭</span> persona: casual</>}
+              {lt>T.p2&&<><br/><span style={{color:C.accent}}>📊</span> Cek harga BTC/IDR</>}
+              {lt>T.p3&&<><br/><span style={{color:C.accent}}>📐</span> Indikator RSI/MACD</>}
+              {lt>T.p4&&<><br/><span style={{color:C.accent}}>🧠</span> ML signal · 5 model</>}
+              {lt>T.p5&&<><br/><span style={{color:C.accent}}>📰</span> News sentiment crypto</>}
+            </MsgB>
+          )}
+          {lt>T.verd&&(
+            <MsgB ac s={eIn(lt,T.verd,.5)}>
+              <span style={{color:C.danger,fontWeight:700}}>🛑 Jangan dulu beli BTC</span><br/><br/>
+              RSI <span style={{color:C.danger}}>78</span> (overbought), MACD bearish divergence, sentiment <span style={{color:C.warn}}>Extreme Greed</span>.<br/><br/>
+              Saran: pasang BUY_LIMIT di <span style={{color:C.success}}>Rp1.350M</span> (-2% dari sekarang).
+            </MsgB>
+          )}
+          {lt>T.btn&&<div style={ePop(lt,T.btn,.5)}><BtnList opts={['Setup BUY_LIMIT auto','Nunggu signal lebih bagus','Beli paksa sekarang']} tapI={lt>T.tap?0:null}/></div>}
+          {lt>T.rep&&<MsgU s={eIn(lt,T.rep,.3)}>1</MsgU>}
+          {lt>T.conf&&(
+            <MsgB ac s={eIn(lt,T.conf,.4)}>
+              <span style={{color:C.success}}>✅ Order #42 set.</span><br/>
+              BUY_LIMIT BTC @ <span style={{color:C.accent}}>Rp1.350M</span><br/>
+              <span style={{color:C.dim,fontSize:10}}>Worker auto-trigger saat harga nyentuh.</span>
+            </MsgB>
+          )}
+        </ChatArea>
+        <ChatInput/>
+      </Phone>
+
+      <OvText main="Independent AI · Bisa NOLAK trade lo" sub="AI Reasoning" op={fi(lt,T.verd,.6)*fo(lt,T.conf+1,.5)}/>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// SCENE 3 — CROSS-CHAT MEMORY
+// ══════════════════════════════════════════════════════════════════════
+function SceneMemory(){
+  const t=useTime();
+  const lt=t-22;
+  const groups=[
+    {n:'Tim Pelayaran',l:'Kapten Tono: JS standby...',b:3,hl:true},
+    {n:'Crypto Indo',l:'Andi: [Foto kucing 🐱]',b:12,hl:false},
+    {n:'Family Group',l:'Mama: Pulang jam berapa?',b:5,hl:false},
+    {n:'Tim Marketing',l:'Rina: laporan Q1.pdf',b:8,hl:false},
+    {n:'Project Alpha',l:'Boss: Review besok jam 9',b:2,hl:false},
+  ];
+  return(
+    <div style={{position:'absolute',inset:0,display:'flex',alignItems:'center',justifyContent:'center',gap:48}}>
+      <BgGrid/>
+      <BgGlow x={640} y={360} op={.09}/>
+      <Chip text="02 · Cross-Chat Memory · RAG + Vector" op={fi(lt,0,.5)}/>
+
+      {/* Group sidebar */}
+      <div style={{width:216,background:'#0e1520',borderRadius:14,border:`1px solid ${C.border}`,overflow:'hidden',boxShadow:'0 24px 64px rgba(0,0,0,.55)',...eLeft(lt,0,.6)}}>
+        <div style={{padding:'9px 13px',borderBottom:`1px solid ${C.border}`,fontSize:10.5,color:C.dim,fontWeight:600,letterSpacing:'.07em',textTransform:'uppercase',display:'flex',alignItems:'center',gap:7}}>
+          <span style={{width:6,height:6,borderRadius:'50%',background:C.success,display:'inline-block',animation:'glowpulse 1.5s infinite'}}/>
+          Groups Listened
+        </div>
+        {groups.map(({n,l,b,hl},i)=>(
+          <div key={i} style={{padding:'8px 13px',borderBottom:i<4?`1px solid ${C.border}`:'none',display:'flex',gap:9,alignItems:'center',background:hl?'rgba(38,166,154,.06)':'transparent',...eIn(lt,i*.1,.4)}}>
+            <div style={{width:28,height:28,borderRadius:'50%',background:`hsl(${i*72},32%,20%)`,border:`1px solid hsl(${i*72},32%,34%)`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:11,fontWeight:700,color:'#fff',flexShrink:0}}>{n[0]}</div>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontSize:11,color:hl?C.accent:C.text,fontWeight:hl?600:400}}>{n}</div>
+              <div style={{fontSize:9,color:C.dim,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{l}</div>
+            </div>
+            <div style={{background:C.accent,borderRadius:10,padding:'1px 5px',fontSize:8.5,color:'#fff',flexShrink:0}}>{b}</div>
+          </div>
+        ))}
+        <div style={{padding:'7px 13px',borderTop:`1px solid ${C.border}`,display:'flex',gap:6,alignItems:'center',opacity:fi(lt,1,.5)}}>
+          <span style={{width:5,height:5,borderRadius:'50%',background:C.accent,display:'inline-block'}}/>
+          <span style={{fontSize:9.5,color:C.dim}}>Silent listening aktif</span>
+        </div>
+      </div>
+
+      {/* Phone */}
+      <Phone style={eIn(lt,.2,.6)}>
+        <ChatHeader name="Claude AI" sub="Cross-chat RAG aktif"/>
+        <ChatArea>
+          {lt>2&&<MsgU s={eIn(lt,2,.4)}>Kapten JS sekarang dimana?</MsgU>}
+          {lt>3&&lt<4.5&&<Dots/>}
+          {lt>4.5&&(
+            <MsgB ac s={eIn(lt,4.5,.5)}>
+              <span style={{fontSize:9.5,color:C.accent}}>🔎 Cross-chat RAG · FTS5 + Vector:</span><br/><br/>
+              Dari group <span style={{color:C.accent,fontWeight:700}}>Tim Pelayaran</span> kemarin 14:23 — Kapten Tono:<br/><br/>
+              <span style={{background:'rgba(38,166,154,.12)',borderLeft:`2px solid ${C.accent}`,padding:'4px 8px',borderRadius:4,display:'block',fontStyle:'italic'}}>"JS lagi standby di Pelabuhan Tanjung Priok bro"</span><br/>
+              <span style={{fontSize:9.5,color:C.dim}}>3 match · confidence 0.94</span>
+            </MsgB>
+          )}
+          {lt>7&&<MsgU s={eIn(lt,7,.4)}>Siapa yang kirim foto kucing tadi?</MsgU>}
+          {lt>8&&lt<9&&<Dots/>}
+          {lt>9&&(
+            <MsgB s={eIn(lt,9,.4)}>
+              <span style={{color:C.accent}}>💾</span> <span style={{fontWeight:700}}>Andi</span> di group <span style={{color:C.accent}}>Crypto Indo</span> pukul 14:21.<br/>
+              Foto kucing oranye duduk di atas keyboard.
+            </MsgB>
+          )}
+        </ChatArea>
+        <ChatInput ph="Tanya tentang chat apapun..."/>
+      </Phone>
+
+      {/* Right info */}
+      <div style={{position:'absolute',right:64,top:'50%',transform:'translateY(-50%)',display:'flex',flexDirection:'column',gap:18,width:256}}>
+        {[
+          {at:1,icon:'💾',title:'Silent Listener',sub:'Auto-log semua media + pesan di semua group'},
+          {at:4.5,icon:'🔎',title:'RAG + FTS5',sub:'Full-text + 384-dim vector semantic search'},
+          {at:9,icon:'🛡️',title:'Privacy First',sub:'Data lokal di HP — tidak ada cloud, audit log penuh'},
+        ].map((f,i)=><FCard key={i} {...f} t={lt} at={f.at}/>)}
+      </div>
+
+      <OvText main="Cross-Chat Memory · On-Demand Recall" sub="RAG + Vector Embeddings" op={fi(lt,4.5,.6)}/>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// SCENE 4 — DASHBOARD TABS
+// ══════════════════════════════════════════════════════════════════════
+function SceneDash(){
+  const t=useTime();
+  const lt=t-35;
+  const lp=exp(cr(lt/.65));
+
+  const TDEFS=[
+    {l:'Dashboard',at:0},{l:'Jadwal',at:5},{l:'Bookings',at:10},
+    {l:'Members',at:14},{l:'Knowledge',at:99},{l:'Expenses',at:99},{l:'Audit',at:99},
+  ];
+  const aTab=lt<5?0:lt<10?1:lt<14?2:3;
+  const tabContents=[
+    <TabHome lt={Math.max(lt,0)}/>,
+    <TabJadwal lt={Math.max(lt-5,0)}/>,
+    <TabBookings lt={Math.max(lt-10,0)}/>,
+    <TabMembers lt={Math.max(lt-14,0)}/>,
+  ];
+
+  return(
+    <div style={{position:'absolute',inset:0,display:'flex',alignItems:'center',justifyContent:'center',flexDirection:'column',opacity:lp}}>
+      <BgGrid/>
+      <BgGlow x={640} y={300} op={.09}/>
+      <Chip text="03 · Business Dashboard · localhost:3457" op={fi(lt,0,.5)}/>
+      <div style={{height:28}}/>
+      <Laptop w={820}>
+        {/* Nav tabs */}
+        <div style={{background:'#0d1520',borderBottom:`1px solid ${C.border}`,padding:'0 16px',display:'flex',alignItems:'center',gap:0}}>
+          <div style={{fontSize:13,fontWeight:800,color:C.accent,marginRight:18,padding:'11px 0',letterSpacing:'-.02em'}}>⚽ FutsalOS</div>
+          {TDEFS.map(({l,at},i)=>{
+            const vis=at<=lt+.5;
+            const isA=aTab===i;
+            return(
+              <div key={i} style={{padding:'11px 12px',fontSize:11.5,fontWeight:isA?700:400,color:isA?C.accent:C.dim,borderBottom:`2px solid ${isA?C.accent:'transparent'}`,transition:'all .35s',opacity:vis?1:0,transform:vis?'translateY(0)':'translateY(-5px)',animation:vis&&at>0?'tabin .4s forwards':'none',whiteSpace:'nowrap'}}>{l}</div>
+            );
+          })}
+        </div>
+        {/* Content */}
+        <div style={{background:'#0c1117',minHeight:340,position:'relative',overflow:'hidden'}}>
+          <div key={aTab} style={{animation:'tabin .3s forwards'}}>{tabContents[aTab]}</div>
+        </div>
+      </Laptop>
+
+      {/* Tab pills indicator */}
+      <div style={{marginTop:14,display:'flex',gap:8,opacity:fi(lt,0,.5)}}>
+        {TDEFS.slice(0,4).map(({l},i)=>(
+          <div key={i} style={{padding:'4px 13px',borderRadius:20,fontSize:10,fontWeight:500,background:aTab===i?'rgba(38,166,154,.15)':'transparent',border:`1px solid ${aTab===i?C.accent:C.border}`,color:aTab===i?C.accent:C.dim,transition:'all .4s'}}>{l}</div>
+        ))}
+      </div>
+      <OvText main="Web Dashboard · 7 Tabs · Mobile Responsive" sub="Business Intelligence" op={fi(lt,.5,.5)}/>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// SCENE 5 — TERMUX
+// ══════════════════════════════════════════════════════════════════════
+function SceneTermux(){
+  const t=useTime();
+  const lt=t-52;
+  const procs=[['wa-bot','● online','12h 43m','150MB'],['tg-bot','● online','12h 43m','80MB'],['futsal-dash','● online','12h 43m','60MB'],['pt-worker','● online','12h 43m','90MB']];
+  return(
+    <div style={{position:'absolute',inset:0,display:'flex',alignItems:'center',justifyContent:'center',gap:58}}>
+      <BgGrid/>
+      <BgGlow x={380} y={360} op={.11}/>
+      <Chip text="04 · Termux Android · Datacenter di Saku" op={fi(lt,0,.5)}/>
+
+      {/* Phone with terminal */}
+      <Phone style={eIn(lt,0,.6)}>
+        <div style={{background:'#0a0f14',padding:'7px 11px',display:'flex',alignItems:'center',gap:7,borderBottom:`1px solid ${C.border}`,minHeight:35,flexShrink:0}}>
+          <div style={{width:7,height:7,borderRadius:'50%',background:C.success,animation:'glowpulse 2s infinite'}}/>
+          <span style={{fontSize:10,color:C.dim,fontFamily:C.mono}}>Termux · Android 14</span>
+        </div>
+        <div style={{flex:1,background:'#090c12',padding:'10px 11px',fontFamily:C.mono,fontSize:11,display:'flex',flexDirection:'column',gap:1,overflowY:'hidden'}}>
+          <div style={{color:C.dim,marginBottom:6}}><span style={{color:C.accent}}>termux</span>@phone:~$</div>
+          {lt>.3&&<div style={{color:C.text,marginBottom:2}}>pm2 status</div>}
+          {lt>.7&&(
+            <div style={{background:'#0d1218',border:`1px solid ${C.border}`,borderRadius:6,padding:'7px 10px',marginBottom:8,opacity:exp(cr((lt-.7)/.4))}}>
+              <div style={{fontSize:9,color:C.dim,borderBottom:`1px solid ${C.border}`,paddingBottom:4,marginBottom:5,display:'flex',gap:14}}>
+                <span style={{width:78}}>NAME</span><span style={{width:58}}>STATUS</span><span style={{width:58}}>UPTIME</span><span>MEM</span>
+              </div>
+              {procs.map(([n,s,u,m],i)=>(
+                <div key={i} style={{display:'flex',gap:14,lineHeight:1.85,fontSize:10,opacity:exp(cr((lt-.8-i*.15)/.3))}}>
+                  <span style={{color:C.text,width:78}}>{n}</span>
+                  <span style={{color:C.success,width:58}}>{s}</span>
+                  <span style={{color:C.dim,width:58}}>{u}</span>
+                  <span style={{color:C.warn}}>{m}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {lt>3&&<><div style={{color:C.dim}}><span style={{color:C.accent}}>$</span> claude --version</div><div style={{color:C.success,marginBottom:8,opacity:exp(cr((lt-3.3)/.3))}}>Claude Code 2.1.143</div></>}
+          {lt>5&&(
+            <>
+              <div style={{color:C.dim}}><span style={{color:C.accent}}>$</span> ./update.sh</div>
+              <div style={{color:C.warn,opacity:exp(cr((lt-5.3)/.4)),marginBottom:1}}>🔄 git pull origin main...</div>
+              {lt>6.5&&<div style={{color:C.success,opacity:exp(cr((lt-6.5)/.3)),marginBottom:1}}>✅ Already up-to-date.</div>}
+              {lt>7.2&&<div style={{color:C.success,opacity:exp(cr((lt-7.2)/.3)),marginBottom:8}}>✅ PM2 restarted (0 diff).</div>}
+            </>
+          )}
+          {lt>8.5&&<div style={{color:C.dim}}><span style={{color:C.accent}}>$</span><span style={{animation:'cblink 1s infinite'}}> ▌</span></div>}
+        </div>
+        <ChatInput ph="Termux shell ready..."/>
+      </Phone>
+
+      {/* Info cards */}
+      <div style={{position:'absolute',right:64,top:'50%',transform:'translateY(-50%)',display:'flex',flexDirection:'column',gap:20,width:334}}>
+        {[
+          {at:.5,icon:'📱',title:'100% Mobile',sub:'Jalan penuh di Termux Android. No PC, no server, no VPS.'},
+          {at:2,icon:'⚙️',title:'PM2 · 4 Proses',sub:'WA bot + TG bot + Dashboard + Worker, auto-restart.'},
+          {at:5,icon:'🔄',title:'Auto-Update',sub:'git pull + npm install + PM2 restart satu command.'},
+          {at:7,icon:'🔒',title:'Self-Hosted',sub:'Data 100% di HP. Tidak ada cloud, tidak ada telemetry.'},
+        ].map((f,i)=><FCard key={i} {...f} t={lt} at={f.at}/>)}
+      </div>
+
+      <OvText main="100% Termux Android · Datacenter di Saku" sub="Mobile-First Architecture" op={fi(lt,2,.5)}/>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// SCENE 6 — MULTILANG + CHART + STATS
+// ══════════════════════════════════════════════════════════════════════
+function SceneMulti(){
+  const t=useTime();
+  const lt=t-65;
+  const health=[['Uptime','142.5h',C.text],['RAM','312MB',C.warn],['DB','47.3MB',C.text],['Messages','8,234',C.accent],['Files','156',C.accent],['Chats','12',C.accent]];
+  return(
+    <div style={{position:'absolute',inset:0,display:'flex',alignItems:'center',justifyContent:'center',gap:56}}>
+      <BgGrid/>
+      <BgGlow x={640} y={360} op={.09}/>
+      <Chip text="05 · Multi-Lingual · Voice Chart · Stats" op={fi(lt,0,.5)}/>
+
+      {/* Phone */}
+      <Phone style={eIn(lt,0,.6)}>
+        <ChatHeader name="Global Project" sub="🌐 Auto-translate aktif"/>
+        <ChatArea>
+          {lt>1&&<MsgU s={eIn(lt,1,.4)}><span style={{fontSize:9,color:'rgba(255,255,255,.4)'}}>🇺🇸 Mike:</span><br/>"what's the deadline for Q2 report?"</MsgU>}
+          {lt>2&&<MsgB s={eIn(lt,2,.4)}><span style={{fontSize:9,color:C.accent}}>🌐 en→id (auto)</span><br/>Kapan deadline laporan Q2?</MsgB>}
+          {lt>3&&<MsgU s={eIn(lt,3,.4)}><span style={{fontSize:9,color:'rgba(255,255,255,.4)'}}>🇯🇵 Yuki:</span><br/>Q2のレポートの締め切りは？</MsgU>}
+          {lt>4&&<MsgB s={eIn(lt,4,.4)}><span style={{fontSize:9,color:C.accent}}>🌐 ja→id (auto)</span><br/>Kapan deadline laporan Q2?</MsgB>}
+          {lt>5.5&&<MsgU s={eIn(lt,5.5,.35)}>/persona formal</MsgU>}
+          {lt>6.5&&<MsgB ac s={eIn(lt,6.5,.4)}><span style={{color:C.accent}}>✅ Persona → formal</span><br/><br/>"Mohon maaf, deadline laporan Q2 adalah tanggal 30 Juni 2026."</MsgB>}
+          {lt>8&&<MsgU s={eIn(lt,8,.3)}>/persona funny</MsgU>}
+          {lt>9&&<MsgB s={eIn(lt,9,.4)}><span style={{color:C.warn}}>😄 Persona → funny</span><br/><br/>"Bro Q2 deadline 30 Juni, jangan kelewatan wkwk udah deket 🔥"</MsgB>}
+        </ChatArea>
+        <ChatInput/>
+      </Phone>
+
+      {/* Right panel: chart + health */}
+      <div style={{display:'flex',flexDirection:'column',gap:14,width:272}}>
+        <div style={eRight(lt,1,.7)}><ChartSVG/></div>
+        <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:'12px 13px',fontFamily:C.mono,fontSize:10.5,...eRight(lt,2,.6)}}>
+          <div style={{color:C.success,marginBottom:8,fontWeight:700,fontSize:11}}>💚 HEALTH CHECK</div>
+          {health.map(([k,v,col],i)=>(
+            <div key={i} style={{display:'flex',justifyContent:'space-between',padding:'3px 0',borderBottom:i<5?`1px solid rgba(255,255,255,.04)`:'none',opacity:exp(cr((lt-2-i*.1)/.3))}}>
+              <span style={{color:C.dim}}>{k}</span><span style={{color:col}}>{v}</span>
+            </div>
+          ))}
+        </div>
+        <div style={{display:'flex',gap:7,flexWrap:'wrap',...eRight(lt,1.5,.5)}}>
+          {['19 Bahasa','6 Persona','Auto-detect','Chart AI','Audit Log','PII Shield'].map((tag,i)=>(
+            <div key={i} style={{background:'rgba(38,166,154,.07)',border:'1px solid rgba(38,166,154,.18)',borderRadius:12,padding:'3px 10px',fontSize:9.5,color:C.accent}}>{tag}</div>
+          ))}
+        </div>
+      </div>
+      <OvText main="19 Bahasa · 6 Persona · Chart + Audit" sub="Intelligence Layer" op={fi(lt,2,.5)}/>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// SCENE 7 — OUTRO
+// ══════════════════════════════════════════════════════════════════════
+function SceneOutro(){
+  const t=useTime();
+  const lt=t-78;
+  const features=[
+    ['WhatsApp Bridge','Baileys WS · Unofficial API'],
+    ['Telegram Bridge','Long-poll · Native Bot API'],
+    ['Paper Trading Bot','81 MCP Tools · ML Signals'],
+    ['Business Manager','24 Tools · Futsal Dashboard'],
+    ['RAG + Vector Search','FTS5 + MiniLM 384-dim'],
+    ['Voice + Vision + Files','Whisper · Groq · pdfkit'],
+    ['19 Bahasa · 6 Persona','Auto-detect · Auto-translate'],
+    ['100% Termux Android','No PC · No Cloud · Di Saku'],
+  ];
+  const stats=[['12,000+','Lines of Code'],['105','MCP Tools'],['60+','Bot Commands'],['30+','DB Tables'],['$20-100','/bulan']];
+  return(
+    <div style={{position:'absolute',inset:0,display:'flex',alignItems:'center',justifyContent:'center',flexDirection:'column',gap:28}}>
+      <BgGrid/>
+      <BgGlow x={640} y={340} op={.14}/>
+      {/* Scan line */}
+      <div style={{position:'absolute',inset:0,overflow:'hidden',pointerEvents:'none'}}>
+        <div style={{position:'absolute',left:0,right:0,height:2,background:'linear-gradient(90deg,transparent,rgba(38,166,154,.15),transparent)',animation:'scan 5s linear infinite'}}/>
+      </div>
+
+      {/* Logo */}
+      <div style={{...ePop(lt,0,.7),display:'flex',flexDirection:'column',alignItems:'center',gap:14}}>
+        <div style={{width:78,height:78,borderRadius:22,background:'linear-gradient(145deg,#2dbbae,#1a6a5e)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:30,fontWeight:900,color:'#fff',animation:'glowpulse 2.5s infinite'}}>C°</div>
+        <div style={{textAlign:'center'}}>
+          <div style={{fontSize:34,fontWeight:900,color:C.text,letterSpacing:'-.04em'}}>Claude Code <span style={{color:C.accent}}>on WhatsApp</span></div>
+          <div style={{fontSize:11.5,color:C.dim,marginTop:7,letterSpacing:'.16em',textTransform:'uppercase'}}>AI di HP lo · WhatsApp · Trading · 100% Mobile.</div>
+        </div>
+      </div>
+
+      {/* Feature grid */}
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'9px 48px'}}>
+        {features.map(([title,sub],i)=>(
+          <div key={i} style={{display:'flex',gap:10,alignItems:'flex-start',...eIn(lt,.8+i*.18,.4)}}>
+            <div style={{width:18,height:18,borderRadius:'50%',background:'rgba(38,166,154,.15)',border:`1px solid ${C.accent}`,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,marginTop:1}}>
+              <div style={{width:6,height:6,borderRadius:'50%',background:C.accent}}/>
+            </div>
+            <div>
+              <div style={{fontSize:13,fontWeight:700,color:C.text,letterSpacing:'-.01em'}}>{title}</div>
+              <div style={{fontSize:10,color:C.dim}}>{sub}</div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Stats */}
+      <div style={{display:'flex',gap:30,borderTop:`1px solid ${C.border}`,paddingTop:18,...eUp(lt,2.4,.6)}}>
+        {stats.map(([v,l],i)=>(
+          <div key={i} style={{textAlign:'center',opacity:exp(cr((lt-2.6-i*.15)/.4))}}>
+            <div style={{fontSize:22,fontWeight:900,color:C.accent,letterSpacing:'-.03em'}}>{v}</div>
+            <div style={{fontSize:9.5,color:C.dim,marginTop:3,letterSpacing:'.06em'}}>{l}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Footer */}
+      <div style={{textAlign:'center',...eIn(lt,3.4,.6)}}>
+        <div style={{fontSize:11,color:C.dim}}>Built with <span style={{color:C.accent}}>Claude Code</span> · Node.js · Baileys · SQLite · PM2 · Termux</div>
+        <div style={{fontSize:10.5,color:C.dim,marginTop:4,fontFamily:C.mono}}>github.com/ghanibot/claude-on-whatsapp</div>
+      </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// ROOT
+// ══════════════════════════════════════════════════════════════════════
+function Demo(){
+  return(
+    <Stage width={1280} height={720} duration={100} background={C.bg} persistKey="cpos-demo" loop={false} autoplay={true}>
+      <Sprite start={0}  end={6}  ><SceneIntro/></Sprite>
+      <Sprite start={5}  end={23} ><ScenePhone/></Sprite>
+      <Sprite start={22} end={37} ><SceneMemory/></Sprite>
+      <Sprite start={35} end={54} ><SceneDash/></Sprite>
+      <Sprite start={52} end={67} ><SceneTermux/></Sprite>
+      <Sprite start={65} end={79} ><SceneMulti/></Sprite>
+      <Sprite start={78} end={100}><SceneOutro/></Sprite>
+    </Stage>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<Demo/>);
+</script>
+</body>
+</html>

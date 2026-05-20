@@ -1,8 +1,35 @@
-# 🤖 Claude Code Personal OS
+<p align="center">
+  <img src="assets/banner.png" alt="Claude Code on WhatsApp" width="100%">
+</p>
 
-Stack lengkap untuk **Claude Code di WhatsApp + Telegram**, paper-trading crypto realistis, manajemen bisnis (futsal), dan dashboard web. Run 100% di Termux Android atau Windows/Linux/macOS.
+<h1 align="center">🤖 Claude Code on WhatsApp</h1>
+
+<p align="center">
+  <b>Your AI Personal OS — di WhatsApp, Telegram, dan dashboard web. Run 100% di Termux Android atau Windows/Linux/macOS.</b>
+</p>
+
+<p align="center">
+  <a href="https://ghanibot.github.io/Claude-Code-on-WhatsApp/"><img src="https://img.shields.io/badge/▶_Live_Demo-Interactive_Presentation-26a69a?style=for-the-badge&logoColor=white" alt="Live Demo"></a>
+  <a href="INSTALL.md"><img src="https://img.shields.io/badge/📥_One_Click_Install-Windows_|_Mac_|_Linux_|_Termux-0f1522?style=for-the-badge" alt="Install"></a>
+  <a href="https://github.com/ghanibot/Claude-Code-on-WhatsApp/releases/latest"><img src="https://img.shields.io/github/v/release/ghanibot/Claude-Code-on-WhatsApp?style=for-the-badge&color=ffa726" alt="Latest Release"></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/ghanibot/Claude-Code-on-WhatsApp/stargazers"><img src="https://img.shields.io/github/stars/ghanibot/Claude-Code-on-WhatsApp?style=flat-square&color=26a69a" alt="Stars"></a>
+  <img src="https://img.shields.io/badge/Node-20+-339933?style=flat-square&logo=node.js&logoColor=white" alt="Node">
+  <img src="https://img.shields.io/badge/Platform-Windows_|_macOS_|_Linux_|_Termux-blue?style=flat-square" alt="Platform">
+  <img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="MIT License">
+</p>
+
+---
 
 > Bukan chatbot rigid — full Claude Code agent dengan akses file system, web, MCP servers, multi-tool reasoning.
+
+## 🎥 Demo Interaktif
+
+👉 **[Buka Live Demo (Interactive Presentation)](https://ghanibot.github.io/Claude-Code-on-WhatsApp/)**
+
+Animasi presentasi 13 scene yang nunjukin semua fitur secara visual.
 
 ## ✨ Highlights
 
