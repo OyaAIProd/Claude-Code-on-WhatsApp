@@ -57,7 +57,7 @@ async function storeEmbedding(messageId, text) {
   } catch (err) { console.error("[EMBED] store:", err.message); return false; }
 }
 
-async function semanticSearch(query, { limit = 10, excludeChatId = null } = {}) {
+async function semanticSearch(query, { limit = 10, excludeChatId = null, threshold = 0.45 } = {}) {
   const qvec = await embed(query);
   if (!qvec) return [];
   try {
@@ -69,8 +69,11 @@ async function semanticSearch(query, { limit = 10, excludeChatId = null } = {}) 
       const v = blobToVector(r.vector);
       return { ...r, score: cosineSim(qvec, v) };
     });
-    scored.sort((a, b) => b.score - a.score);
-    return scored.slice(0, limit).filter(r => r.score > 0.3);
+    // Filter by relevance threshold FIRST, then take top N — avoids returning weak matches.
+    return scored
+      .filter(r => r.score >= threshold)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit);
   } catch (err) { console.error("[EMBED] search:", err.message); return []; }
 }
 

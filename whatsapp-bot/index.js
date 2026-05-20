@@ -911,7 +911,7 @@ async function handleCommand(chatId, senderJid, text, isGroup, msg) {
     const matches = rag.searchAllMessages(argText, { limit: 15 });
     if (!matches.length) return sendText(chatId, `❌ Gak ada match "${argText}" di seluruh chat.`, msg);
     const lines = matches.map((m, i) => {
-      const time = new Date(m.timestamp * 1000).toISOString().slice(0, 16).replace("T", " ");
+      const time = rag.fmtWIB(m.timestamp);
       const sender = m.from_me ? "[BOT]" : (m.sender_name || "?");
       const where = m.is_group ? `👥 ${m.chat_name}` : `👤 DM`;
       return `${i + 1}. [${time}] *${sender}* @ ${where}\n   ${(m.text || "(media)").slice(0, 150)}${m.media_filename ? "\n   📎 " + m.media_filename : ""}`;
@@ -970,7 +970,7 @@ async function processUserMessage(chatId, userText, quotedMsg, isGroup, senderJi
   const tracker = new ProgressTracker(chatId, quotedMsg);
   let result = null;
   try {
-    const context = getRecentMessages(chatId, 25);
+    const context = getRecentMessages(chatId, 35);
     let lastThinkingAt = 0;
     result = await streamMessage(userText, chatId, context, isGroup, (evt) => {
       if (evt.type === "tool_use") tracker.addStep(evt.label).catch(() => {});

@@ -30,6 +30,25 @@ Lo full Claude Code agent — bukan chatbot rigid. Pakai inisiatif. Trust judgme
 - Jangan over-explain. Kalau bisa langsung jawab, langsung jawab. Skip preamble.
 - Kalau task butuh banyak step, jalanin semuanya sekaligus tanpa nanya konfirmasi tiap step (kecuali safe-mode aktif).
 
+🔎 CARI DULU, BARU NANYA — RULE PALING PENTING:
+User nanya sesuatu → JANGAN langsung balik nanya "maksud kamu apa?" / "file mana?" / "yang mana?". CARI sendiri dulu. Boleh nanya HANYA kalau udah cari beneran dan tetap buntu, ATAU keputusan irreversible.
+
+🧭 ROUTING TOOL (pilih sesuai jenis pertanyaan):
+1. Soal isi chat/group/orang ("siapa bilang X", "ringkas", "apa kata Y", "pernah dibahas?") → BACA dulu section "RECENT CONVERSATION" + "CROSS-CHAT SEARCH RESULTS" + "KNOWN GROUPS" yang udah disuntik ke prompt ini. Jawab dari situ. JANGAN WebSearch.
+2. Soal isi FILE (pdf/excel/word/foto) → ada PATH di context? Langsung Read PATH itu. JANGAN nanya "filenya mana".
+3. Soal FOTO/GAMBAR/VIDEO lama → ada section "IMAGE MATCHES"? Jawab dari deskripsi+caption. Butuh detail → Read PATH. JANGAN bilang "gw gak liat".
+4. Soal file di disk / cari file → Glob (cari nama) / Grep (cari isi) / Read. JANGAN nanya path lengkap, cari sendiri.
+5. Info terkini / fakta luar (harga, berita, dokumentasi) → WebSearch / WebFetch. Cuma ini yang boleh keluar cari ke web.
+6. Trading / crypto / portfolio → MCP tools paper-trading (get_price, get_portfolio, analyze_market, dll). JANGAN ngarang angka.
+7. Bener-bener gak ketemu di context, file, web manapun → baru bilang jujur "gw cari di [chat/file/web] tapi gak nemu info itu". Itu lebih baik daripada nanya muter.
+
+📝 PERTANYAAN ENUMERASI ("siapa yang berangkat?", "siapa aja yang hadir", "list yang udah bayar", "berapa yang pesan"):
+JANGAN jawab "gak ada daftar". SCAN seluruh RECENT CONVERSATION + CROSS-CHAT SEARCH RESULTS, KUMPULIN sendiri tiap entri yang cocok, lalu SUSUN jadi daftar bullet. Contoh: user "tadi kep siapa yang berangkat?" → baca semua pesan, kumpulin nama yang ada kata berangkat/pergi/jalan → "Yang berangkat: • Kapten Awi (12:17 WIB) • Kapten Rafli (...)". Kalau bener-bener gak ada satu pun di context → "gw cek pesan terakhir gak ada yang nyebut berangkat".
+
+⏰ JAM: semua timestamp di context = WIB. Lapor ke user pakai jam itu apa adanya, JANGAN konversi/geser. Jam di prefix [HH:MM] = waktu pesan DIKIRIM, bukan otomatis = jam kejadian. Kalau user nyebut jam di teks (mis "berangkat jam 12:17"), pakai jam dari TEKS, bukan dari prefix timestamp.
+
+⚖️ KAPAN BOLEH NANYA: cuma kalau (a) ada 2+ tafsiran yang dampaknya beda jauh & gak bisa ditebak dari context, atau (b) aksi destruktif/irreversible (hapus, kirim ke orang lain, bayar). Selain itu: KERJAIN, jangan nanya.
+
 🔘 INTERACTIVE BUTTONS (lo pilihan saat butuh approval/clarification):
 Kalau lo butuh user pilih opsi (approve/deny, A/B/C, format file output, dll), tutup output lo dengan marker:
 [BUTTONS: yes=Ya | yes_remember=Ya, jangan tanya lagi | no=Tidak]
@@ -267,7 +286,7 @@ function buildContext(messages, isGroup) {
   if (!messages.length) return "";
   const chatName = messages[messages.length - 1]?.chat_name || "(unknown)";
   const lines = messages.map(m => {
-    const time = new Date(m.timestamp * 1000).toISOString().slice(11, 16);
+    const time = rag.fmtWIB(m.timestamp, false);
     const sender = m.from_me ? "[BOT]" : (m.sender_name || m.sender_jid?.split("@")[0] || "?");
     let line = `[${time}] ${sender}: ${m.text || "(media)"}`;
     if (m.media_path) {
@@ -292,8 +311,8 @@ function buildContext(messages, isGroup) {
     return line;
   });
   const header = isGroup
-    ? `📋 RECENT GROUP CONVERSATION — Group: "${chatName}"`
-    : `📋 RECENT DM CONVERSATION — User: "${chatName}"`;
+    ? `📋 RECENT GROUP CONVERSATION — Group: "${chatName}" (jam = WIB, pakai apa adanya saat lapor ke user)`
+    : `📋 RECENT DM CONVERSATION — User: "${chatName}" (jam = WIB)`;
   return `\n\n${header}\n${lines.join("\n")}\n--- END CONTEXT ---\n`;
 }
 
@@ -466,21 +485,27 @@ async function streamMessage(userText, chatId, contextMessages = [], isGroup = f
   }
 
   if (rag.shouldDoRagSearch(userText)) {
-    const ftsMatches = rag.searchAllMessages(userText, { limit: 6 });
+    const ftsMatches = rag.searchAllMessages(userText, { limit: 5 });
     let semanticMatches = [];
     if (process.env.EMBEDDINGS_ENABLED !== "0") {
-      try { semanticMatches = await embeddings.semanticSearch(userText, { limit: 4 }); } catch {}
+      try { semanticMatches = await embeddings.semanticSearch(userText, { limit: 3, threshold: 0.5 }); } catch {}
     }
+    // Interleave fts + semantic so neither source dominates; dedupe; cap at 6 for token economy.
     const seen = new Set();
     const merged = [];
-    for (const m of [...ftsMatches, ...semanticMatches]) {
-      if (seen.has(m.id || m.message_id)) continue;
-      seen.add(m.id || m.message_id);
-      merged.push(m);
-      if (merged.length >= 8) break;
+    const maxLen = Math.max(ftsMatches.length, semanticMatches.length);
+    for (let i = 0; i < maxLen && merged.length < 6; i++) {
+      for (const m of [ftsMatches[i], semanticMatches[i]]) {
+        if (!m) continue;
+        const key = m.id || m.message_id;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        merged.push(m);
+        if (merged.length >= 6) break;
+      }
     }
     if (merged.length) {
-      const truncated = merged.map(m => ({ ...m, text: (m.text || "").slice(0, 200) }));
+      const truncated = merged.map(m => ({ ...m, text: (m.text || "").slice(0, 160) }));
       systemPrompt += rag.buildRagContext(truncated);
       onEvent({ type: "tool_use", name: "RAG", input: {}, label: `🔎 RAG: ${ftsMatches.length} fts + ${semanticMatches.length} semantic` });
     }

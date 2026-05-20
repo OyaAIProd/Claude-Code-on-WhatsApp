@@ -1,14 +1,37 @@
 const { db } = require("./storage");
 
+// Display timestamps in WIB (Asia/Jakarta) — raw toISOString is UTC and shows wrong local time.
+function fmtWIB(tsSec, withDate = true) {
+  try {
+    const d = new Date(tsSec * 1000);
+    const date = d.toLocaleDateString("en-CA", { timeZone: "Asia/Jakarta" });
+    const time = d.toLocaleTimeString("en-GB", { timeZone: "Asia/Jakarta", hour: "2-digit", minute: "2-digit", hour12: false });
+    return withDate ? `${date} ${time}` : time;
+  } catch { return new Date(tsSec * 1000).toISOString().slice(0, 16).replace("T", " "); }
+}
+
+// Question/filler words carry no topical signal — drop them so FTS ranks on content words only.
+const FTS_STOPWORDS = new Set([
+  "yang","dan","atau","itu","ini","ada","apa","apakah","siapa","kapan","dimana","kemana","kenapa",
+  "gimana","bagaimana","mana","tadi","kemarin","tolong","coba","dong","deh","sih","kah","kok",
+  "bilang","ngomong","kata","katanya","soal","tentang","punya","buat","sama","dengan","untuk",
+  "dari","ke","di","pada","yg","gak","ga","nggak","engga","udah","sudah","pernah","aku","saya",
+  "kamu","lo","gw","gue","dia","kita","mereka","bisa","mau","pengen","the","and","what","who",
+  "when","where","why","how","is","are","was","were","about","please"
+]);
+
 function escapeFts(q) {
-  return String(q || "")
+  const tokens = String(q || "")
+    .toLowerCase()
     .replace(/["']/g, " ")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
     .replace(/\s+/g, " ")
     .trim()
     .split(" ")
-    .filter(t => t.length >= 2)
-    .map(t => `"${t}"*`)
-    .join(" OR ");
+    .filter(t => t.length >= 3 && !FTS_STOPWORDS.has(t));
+  const uniq = [...new Set(tokens)];
+  if (!uniq.length) return "";
+  return uniq.map(t => `"${t}"*`).join(" OR ");
 }
 
 const IMG_STOPWORDS = new Set(["yang","foto","gambar","image","picture","photo","mana","tadi","kemarin","tentang","soal","apa","itu","ini","dong","coba","kirim","lihat","liat","show","cari","carikan","cariin"]);
@@ -26,7 +49,8 @@ function searchImagesByDescription(query, { limit = 3, chatId = null } = {}) {
   const likeParams = tokens.map(t => `%${t}%`);
   // params: scoreExpr likes (SELECT) + whereOr likes (WHERE) + [chatId] + limit
   const params = [...likeParams, ...likeParams];
-  let sql = `SELECT id, chat_id, chat_name, sender_jid, sender_name, text, timestamp, is_group, media_filename, media_path, media_caption, vision_desc, from_me, (${scoreExpr}) AS match_score FROM messages WHERE vision_desc IS NOT NULL AND (${whereOr})`;
+  // Match media with EITHER a vision description (images) OR a caption (covers videos too).
+  let sql = `SELECT id, chat_id, chat_name, sender_jid, sender_name, text, timestamp, is_group, media_filename, media_path, media_caption, vision_desc, from_me, (${scoreExpr}) AS match_score FROM messages WHERE media_path IS NOT NULL AND (vision_desc IS NOT NULL OR media_caption IS NOT NULL) AND (${whereOr})`;
   if (chatId) { sql += " AND chat_id = ?"; params.push(chatId); }
   sql += " ORDER BY match_score DESC, timestamp DESC LIMIT ?";
   params.push(limit);
@@ -96,14 +120,21 @@ const RAG_TRIGGER_PATTERNS = [
   /\b(arsip|archive)\b/i
 ];
 
+// Question/recall words — fire RAG even without a trailing "?" so open-ended recall
+// ("tadi kep siapa yang berangkat") works the same as keyword queries.
+const QUESTION_WORDS = /\b(siapa|apa|apakah|kapan|dimana|di\s?mana|kemana|berapa|mana|gimana|bagaimana|adakah|udah|sudah|kah)\b/i;
+const RECALL_VERBS = /\b(berangkat|datang|pergi|sampai|tiba|kirim|terima|bayar|pesan|booking|jadwal|hadir|absen|izin|sakit|cuti|lapor)\b/i;
+
 function shouldDoRagSearch(userText) {
   if (!userText) return false;
   const t = userText.trim();
   if (t.length < 5) return false;
-  if (RAG_TRIGGER_PATTERNS.some(p => p.test(t))) return true;
   const greetingPattern = /^(halo|hai|hi|hello|hey|p|test|tes|woi|woy|bro|sis|coba|ok|oke|sip|thx|thanks|makasih|y[ae]s?)\W*$/i;
   if (greetingPattern.test(t)) return false;
+  if (RAG_TRIGGER_PATTERNS.some(p => p.test(t))) return true;
   const wc = t.split(/\s+/).length;
+  // Any question word OR recall verb in a multi-word message → search memory.
+  if (wc >= 3 && (QUESTION_WORDS.test(t) || RECALL_VERBS.test(t))) return true;
   if (wc >= 5 && /\?$/.test(t)) return true;
   return false;
 }
@@ -111,10 +142,10 @@ function shouldDoRagSearch(userText) {
 function buildRagContext(matches, label = "🔎 CROSS-CHAT SEARCH RESULTS") {
   if (!matches.length) return "";
   const lines = matches.map((m, i) => {
-    const time = new Date(m.timestamp * 1000).toISOString().slice(0, 16).replace("T", " ");
+    const time = fmtWIB(m.timestamp);
     const sender = m.from_me ? "[BOT]" : (m.sender_name || m.sender_jid?.split("@")[0] || "?");
     const where = m.is_group ? `group "${m.chat_name}"` : `DM ${m.chat_name}`;
-    let line = `${i + 1}. [${time}] ${sender} @ ${where}: ${(m.text || "(media)").slice(0, 200)}`;
+    let line = `${i + 1}. [${time} WIB] ${sender} @ ${where}: ${(m.text || "(media)").slice(0, 200)}`;
     if (m.media_filename) line += `\n   📎 file: ${m.media_filename} (PATH=${m.media_path})`;
     return line;
   });
@@ -186,5 +217,5 @@ function getProfileSourceMessages(chatId, limit = 80) {
 module.exports = {
   searchAllMessages, searchByChat, searchImagesByDescription, shouldDoRagSearch, buildRagContext,
   getGroupProfiles, buildGroupProfilesContext, upsertGroupProfile,
-  getChatsNeedingProfile, getProfileSourceMessages, escapeFts
+  getChatsNeedingProfile, getProfileSourceMessages, escapeFts, fmtWIB
 };
