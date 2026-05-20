@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "paper-trading": {
+      "command": "node",
+      "args": ["C:\\Users\\USER\\Desktop\\paper-trading\\src\\index.js"]
+    }
+  }
+}

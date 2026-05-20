@@ -1,0 +1,76 @@
+# Dependencies
+node_modules/
+package-lock.json
+yarn.lock
+
+# Environment
+.env
+.env.local
+*.env
+
+# Runtime state (per-chat sessions, etc)
+sessions.json
+cwds.json
+models.json
+
+# Databases
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite-journal
+
+# Data folders
+**/data/
+**/backups/
+**/auth/
+**/files/
+**/calendar/
+**/generated/
+
+# Logs
+*.log
+logs/
+
+# PID files
+*.pid
+
+# Backups
+*.backup
+*backup*
+src.v3-backup/
+*.v2-backup
+*.v1-backup
+
+# Worker
+worker.pid
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Build output
+dist/
+build/
+out/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Test
+coverage/
+.nyc_output/
+
+# Misc
+*.tmp
+.cache/

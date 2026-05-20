@@ -1,0 +1,21 @@
+{
+  "name": "paper-trading-mcp",
+  "version": "1.0.0",
+  "description": "Paper Trading MCP Server (CommonJS, better-sqlite3, CoinGecko)",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node launch.js",
+    "mcp": "node src/index.js",
+    "worker": "node src/worker.js",
+    "worker:bg": "start /b node src/worker.js",
+    "wa": "cd whatsapp-bot && npm start",
+    "tg": "cd telegram-bot && npm start",
+    "futsal": "cd futsal-mcp && npm run dashboard"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "better-sqlite3": "^12.10.0",
+    "node-fetch": "^2.7.0",
+    "zod": "^3.23.8"
+  }
+}

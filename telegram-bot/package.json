@@ -1,0 +1,13 @@
+{
+  "name": "paper-trading-telegram-bot",
+  "version": "1.0.0",
+  "description": "Telegram bridge ke Claude AI dengan paper-trading tools",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "node-fetch": "^2.7.0"
+  }
+}

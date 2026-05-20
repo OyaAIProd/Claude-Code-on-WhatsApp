@@ -1,0 +1,1317 @@
+require("dotenv").config({ path: require("path").join(__dirname, ".env") });
+const path = require("path");
+const fs = require("fs");
+const qrcode = require("qrcode-terminal");
+const pino = require("pino");
+const {
+  default: makeWASocket,
+  useMultiFileAuthState,
+  DisconnectReason,
+  fetchLatestBaileysVersion,
+  jidNormalizedUser
+} = require("@whiskeysockets/baileys");
+
+const {
+  db, saveMessage, getRecentMessages, searchMessages, getChatList, getChatConfig, setChatConfig,
+  listChatSessions, newChatSession, findChatSession, renameCurrentSession, deleteChatSession
+} = require("./storage");
+const { isBoss, addBoss, removeBoss, listBosses, seedInitialBosses } = require("./bosses");
+const {
+  streamMessage, setModel, getModel, dropSession, getCwd, setCwd, getEffort, setEffort, DEFAULT_MODEL, DEFAULT_CWD,
+  extractChartUrls, sanitizeMarkdown, splitLong
+} = require("./ai");
+const { transcribeWhatsappVoice } = require("./voice");
+const { downloadAndSave, detectMediaType, listChatFiles, extractMediaMeta } = require("./media");
+
+function extractMediaMetaCaption(message, type) {
+  const m = extractMediaMeta(message, type);
+  return m?.caption || null;
+}
+const rag = require("./rag");
+const { startProfileGenerator, generateProfileFor } = require("./profile_gen");
+const audit = require("./audit");
+const backupMod = require("./backup");
+const userProfiles = require("./user_profiles");
+const scheduler = require("./scheduler");
+const pii = require("./pii");
+const vision = require("./vision");
+const persona = require("./persona");
+const plugins = require("./plugins");
+const workflows = require("./workflows");
+const embeddings = require("./embeddings");
+const budgets = require("./budgets");
+const translate = require("./translate");
+const knowledge = require("./knowledge");
+const buttonsMod = require("./buttons");
+const calendar = require("./calendar");
+
+const AUTH_DIR = path.join(__dirname, "data", "auth");
+fs.mkdirSync(AUTH_DIR, { recursive: true });
+
+let botJid = null;
+let sock = null;
+const logger = pino({ level: process.env.LOG_LEVEL || "warn" });
+const COOLDOWN_MS = 500;
+const lastReplyAt = new Map();
+const chatState = new Map();
+
+function getChatState(chatId) {
+  let s = chatState.get(chatId);
+  if (!s) { s = { busy: false, queue: [] }; chatState.set(chatId, s); }
+  return s;
+}
+
+async function enqueueOrRun(chatId, userText, msg, isGroup, senderJid = null) {
+  const state = getChatState(chatId);
+  if (state.busy) {
+    state.queue.push({ userText, msg, isGroup, senderJid, senderName: msg?.pushName || "user" });
+    console.log(`[QUEUE] chat=${chatId} queued (total ${state.queue.length})`);
+    return;
+  }
+  state.busy = true;
+  try {
+    await processUserMessage(chatId, userText, msg, isGroup, senderJid);
+    while (state.queue.length > 0) {
+      const batch = state.queue.splice(0);
+      const combined = batch.length === 1
+        ? batch[0].userText
+        : `(Sambil lo proses pesan sebelumnya, user kirim ${batch.length} pesan tambahan:)\n${batch.map((b, i) => `${i + 1}. [${b.senderName}] ${b.userText}`).join("\n")}\n\nProcess semua di atas berurutan, atau gabungin jadi satu jawaban kalau berkaitan.`;
+      const firstMsg = batch[0].msg;
+      await processUserMessage(chatId, combined, firstMsg, isGroup, batch[0].senderJid);
+    }
+  } finally {
+    state.busy = false;
+  }
+}
+seedInitialBosses(process.env.WA_INITIAL_BOSSES);
+
+function extractText(message) {
+  if (!message) return "";
+  if (message.conversation) return message.conversation;
+  if (message.extendedTextMessage?.text) return message.extendedTextMessage.text;
+  if (message.imageMessage?.caption) return message.imageMessage.caption;
+  if (message.videoMessage?.caption) return message.videoMessage.caption;
+  return "";
+}
+function isVoiceMessage(message) { return !!(message?.audioMessage); }
+function extractQuoted(message) {
+  const ctx = message?.extendedTextMessage?.contextInfo;
+  if (!ctx?.quotedMessage) return null;
+  return { id: ctx.stanzaId, sender: ctx.participant || ctx.remoteJid, text: extractText(ctx.quotedMessage) };
+}
+function extractMentions(message) {
+  const ctx = message?.extendedTextMessage?.contextInfo;
+  return ctx?.mentionedJid || [];
+}
+function isMentionedBot(mentions, botUserJid) {
+  if (!botUserJid) return false;
+  const botNum = botUserJid.split(":")[0].split("@")[0];
+  return mentions.some(j => j.startsWith(botNum + "@"));
+}
+function isReplyToBot(quoted, botUserJid) {
+  if (!quoted || !botUserJid) return false;
+  const botNum = botUserJid.split(":")[0].split("@")[0];
+  const qSender = (quoted.sender || "").split(":")[0];
+  return qSender.startsWith(botNum);
+}
+
+async function getChatName(chatId) {
+  try {
+    if (chatId.endsWith("@g.us")) {
+      const meta = await sock.groupMetadata(chatId).catch(() => null);
+      return meta?.subject || chatId;
+    }
+    return chatId.split("@")[0];
+  } catch { return chatId; }
+}
+
+async function sendText(chatId, text, quotedMsg) {
+  if (!text) return null;
+  try {
+    return await sock.sendMessage(chatId, { text: text.slice(0, 4096) }, quotedMsg ? { quoted: quotedMsg } : {});
+  } catch (err) { console.error("sendText:", err.message); }
+}
+
+async function editText(chatId, msgKey, text) {
+  if (!msgKey) return;
+  try {
+    await sock.sendMessage(chatId, { text: text.slice(0, 4096), edit: msgKey });
+  } catch (err) { console.error("editText:", err.message); }
+}
+
+async function reactMsg(chatId, key, emoji) {
+  try { await sock.sendMessage(chatId, { react: { text: emoji, key } }); } catch {}
+}
+
+async function sendImage(chatId, url, caption, quotedMsg) {
+  try {
+    return await sock.sendMessage(chatId, { image: { url }, caption: caption?.slice(0, 1000) || "" }, quotedMsg ? { quoted: quotedMsg } : {});
+  } catch (err) { console.error("sendImage:", err.message); }
+}
+
+function mimeFromExt(filePath) {
+  const ext = require("path").extname(filePath).toLowerCase();
+  const map = {
+    ".pdf": "application/pdf",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".doc": "application/msword",
+    ".xls": "application/vnd.ms-excel",
+    ".ppt": "application/vnd.ms-powerpoint",
+    ".txt": "text/plain",
+    ".csv": "text/csv",
+    ".json": "application/json",
+    ".zip": "application/zip",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".mp4": "video/mp4",
+    ".mp3": "audio/mpeg"
+  };
+  return map[ext] || "application/octet-stream";
+}
+
+async function sendDocument(chatId, filePath, fileName, caption, quotedMsg) {
+  try {
+    if (!fs.existsSync(filePath)) {
+      await sendText(chatId, `❌ File gak ada: \`${filePath}\``, quotedMsg);
+      return null;
+    }
+    const stat = fs.statSync(filePath);
+    if (stat.size > 100 * 1024 * 1024) {
+      await sendText(chatId, `❌ File terlalu besar (${(stat.size / 1024 / 1024).toFixed(1)}MB, max 100MB)`, quotedMsg);
+      return null;
+    }
+    const finalName = fileName || path.basename(filePath);
+    const mimetype = mimeFromExt(filePath);
+    return await sock.sendMessage(chatId, {
+      document: { url: filePath },
+      fileName: finalName,
+      mimetype,
+      caption: caption?.slice(0, 1000) || ""
+    }, quotedMsg ? { quoted: quotedMsg } : {});
+  } catch (err) {
+    console.error("sendDocument:", err.message);
+    await sendText(chatId, `❌ Gagal kirim file: ${err.message.slice(0, 150)}`, quotedMsg);
+  }
+}
+
+function extractAttachMarkers(text) {
+  if (!text) return { cleaned: text, files: [] };
+  const files = [];
+  const cleaned = text.replace(/\[ATTACH_FILE:\s*([^\]\n]+?)(?:\s*\|\s*([^\]\n]+?))?\]/g, (m, p, name) => {
+    files.push({ path: p.trim(), name: (name || "").trim() || null });
+    return "";
+  });
+  return { cleaned: cleaned.trim(), files };
+}
+
+class ProgressTracker {
+  constructor(chatId, quotedMsg) {
+    this.chatId = chatId;
+    this.quotedMsg = quotedMsg;
+    this.messageKey = null;
+    this.steps = [];
+    this.lastEdit = 0;
+    this.MIN_INTERVAL = 800;
+    this.pending = null;
+    this.startedAt = Date.now();
+  }
+  async ensureMessage() {
+    if (this.messageKey) return;
+    const r = await sendText(this.chatId, "⏳ _memproses..._", this.quotedMsg);
+    this.messageKey = r?.key;
+  }
+  async addStep(label) {
+    const last = this.steps[this.steps.length - 1];
+    if (last === label) return;
+    this.steps.push(label);
+    if (!this.messageKey) await this.ensureMessage();
+    if (this.steps.length === 1) { await this.doUpdate(); return; }
+    this.scheduleUpdate();
+  }
+  scheduleUpdate() {
+    const now = Date.now();
+    if (now - this.lastEdit >= this.MIN_INTERVAL) {
+      this.doUpdate();
+    } else if (!this.pending) {
+      const wait = this.MIN_INTERVAL - (now - this.lastEdit);
+      this.pending = setTimeout(() => { this.pending = null; this.doUpdate(); }, wait);
+    }
+  }
+  async doUpdate() {
+    if (!this.messageKey) return;
+    this.lastEdit = Date.now();
+    const recent = this.steps.slice(-8);
+    const sec = ((Date.now() - this.startedAt) / 1000).toFixed(0);
+    const text = `⏳ _memproses ${sec}s..._\n\n${recent.join("\n")}`;
+    await editText(this.chatId, this.messageKey, text);
+  }
+  async finalize(success = true) {
+    if (this.pending) { clearTimeout(this.pending); this.pending = null; }
+    if (!this.messageKey) return;
+    const sec = ((Date.now() - this.startedAt) / 1000).toFixed(1);
+    const summary = success
+      ? `✅ _${this.steps.length} step · ${sec}s_`
+      : `❌ _gagal · ${this.steps.length} step · ${sec}s_`;
+    await editText(this.chatId, this.messageKey, summary);
+  }
+  hasMessage() { return !!this.messageKey; }
+}
+
+const BOT_LOCAL_COMMANDS = new Set([
+  "/help", "/start", "/reset", "/id", "/pwd", "/home", "/cd",
+  "/sessions", "/list", "/resume", "/new", "/rename", "/delete",
+  "/model", "/safe", "/safe-mode", "/permission",
+  "/boss-add", "/boss-remove", "/list-bosses", "/list-chats",
+  "/dm-on", "/dm-off", "/listen-on", "/listen-off",
+  "/summarize", "/whosaid", "/recent", "/files",
+  "/search", "/topics", "/profile", "/profile-gen",
+  "/effort", "/health", "/send", "/analyze",
+  "/persona", "/remind", "/reminders", "/cron", "/audit", "/backup",
+  "/users", "/userprofile", "/pii", "/wf", "/workflow", "/workflows",
+  "/plugins", "/plugin-reload", "/embedstatus", "/embed-backfill",
+  "/lang", "/translate", "/budget", "/budgets",
+  "/language", "/import", "/imports", "/import-delete",
+  "/pilih", "/pick", "/remembered", "/forget",
+  "/event", "/events", "/ics", "/cal"
+]);
+
+async function handleCommand(chatId, senderJid, text, isGroup, msg) {
+  const parts = text.trim().split(/\s+/);
+  const cmd = parts[0].toLowerCase();
+  const argText = text.slice(cmd.length).trim();
+  const boss = isBoss(senderJid);
+
+  if (!BOT_LOCAL_COMMANDS.has(cmd)) return false;
+
+  if (cmd === "/start" || cmd === "/help") {
+    return sendText(chatId,
+      `🤖 *Claude Code di WhatsApp*\n\n` +
+      `Full Claude Code agent di HP lo: file system, web, MCP, semua tool.\n\n` +
+      `📋 *Pakai biasa*: chat bebas / voice note Indonesia / slash command Claude (/init, /review, dll auto-forward)\n\n` +
+      `🎤 _Voice note auto-transkrip Whisper_\n\n` +
+      `*Umum:*\n/help • /summarize [N] • /whosaid <kata> • /recent [N] • /files\n/search <kata> (cari di SEMUA group) • /topics (daftar group + topik) • /profile (group ini)\n\n` +
+      `*Session (boss):*\n/sessions • /resume <n> • /new [nama] • /rename <nama> • /delete <n> • /reset\n\n` +
+      `*Setup (boss):*\n/model [sonnet|opus|haiku]\n/effort [low|medium|high|xhigh|max]\n/safe on|off (konfirmasi sebelum action)\n/permission <mode>\n/cd <path> • /pwd • /home\n\n` +
+      `*File ops:*\n/files • /send <path> • /analyze <path>\n\n` +
+      `*System:*\n/health (status bot)\n\n` +
+      `*Admin (boss):*\n/boss-add <number> • /boss-remove • /list-bosses\n/list-chats • /dm-on|off • /listen-on|off\n\n` +
+      `*ID:* /id`, msg);
+  }
+  if (cmd === "/id") return sendText(chatId, `Chat ID: \`${chatId}\`\nSender JID: \`${senderJid}\``, msg);
+
+  if (cmd === "/pwd") return sendText(chatId, `📂 cwd: \`${getCwd(chatId)}\``, msg);
+  if (cmd === "/home") { if (!boss) return sendText(chatId, "❌ Boss only.", msg); setCwd(chatId, DEFAULT_CWD); return sendText(chatId, `✅ cwd → \`${DEFAULT_CWD}\``, msg); }
+  if (cmd === "/cd") {
+    if (!boss) return sendText(chatId, "❌ Boss only.", msg);
+    if (!argText) return sendText(chatId, "Format: /cd <path>", msg);
+    let abs = argText;
+    if (!path.isAbsolute(argText)) abs = path.resolve(getCwd(chatId), argText);
+    if (!fs.existsSync(abs) || !fs.statSync(abs).isDirectory()) return sendText(chatId, `❌ Folder gak ada: \`${abs}\``, msg);
+    setCwd(chatId, abs);
+    return sendText(chatId, `✅ cwd → \`${abs}\``, msg);
+  }
+
+  if (cmd === "/sessions" || cmd === "/list") {
+    const list = listChatSessions(chatId);
+    if (!list.length) return sendText(chatId, "📭 Belum ada session. Kirim pesan biasa untuk bikin pertama.", msg);
+    const cur = getChatConfig(chatId).claude_session_id;
+    const lines = list.map((s, i) => `${s.session_uuid === cur ? "👉" : "  "} *${i + 1}.* ${s.name} \`${s.session_uuid.slice(0, 8)}\` _${s.last_used.slice(0, 16)}_`);
+    return sendText(chatId, `📂 *SESSIONS (${list.length})*\n\n${lines.join("\n")}\n\n/resume <nomor>`, msg);
+  }
+  if (cmd === "/resume") {
+    if (!boss) return sendText(chatId, "❌ Boss only.", msg);
+    if (!argText) return sendText(chatId, "Format: /resume <nomor>. Liat /sessions.", msg);
+    const s = findChatSession(chatId, argText);
+    if (!s) return sendText(chatId, `❌ Session "${argText}" gak ada.`, msg);
+    setChatConfig(chatId, { claude_session_id: s.session_uuid });
+    return sendText(chatId, `✅ → *${s.name}* \`${s.session_uuid.slice(0, 8)}\``, msg);
+  }
+  if (cmd === "/new") {
+    if (!boss) return sendText(chatId, "❌ Boss only.", msg);
+    const s = newChatSession(chatId, argText || null);
+    return sendText(chatId, `✨ Session baru: *${s.name}*\n\`${s.uuid.slice(0, 8)}\``, msg);
+  }
+  if (cmd === "/rename") {
+    if (!boss) return sendText(chatId, "❌ Boss only.", msg);
+    if (!argText) return sendText(chatId, "Format: /rename <nama>", msg);
+    return sendText(chatId, renameCurrentSession(chatId, argText) ? `✅ → *${argText}*` : "❌ Gak ada current session.", msg);
+  }
+  if (cmd === "/delete") {
+    if (!boss) return sendText(chatId, "❌ Boss only.", msg);
+    const d = deleteChatSession(chatId, argText);
+    return sendText(chatId, d ? `🗑️ Deleted: *${d.name}*` : `❌ "${argText}" gak ada.`, msg);
+  }
+  if (cmd === "/reset") {
+    if (!boss) return sendText(chatId, "❌ Boss only.", msg);
+    dropSession(chatId);
+    return sendText(chatId, "✅ Current session di-drop. Pesan berikutnya bikin session baru.", msg);
+  }
+
+  if (cmd === "/model") {
+    if (!argText) return sendText(chatId, `🧠 Model: *${getModel(chatId)}*\n\nGanti (boss): /model sonnet | opus | haiku`, msg);
+    if (!boss) return sendText(chatId, "❌ Boss only.", msg);
+    setModel(chatId, argText);
+    return sendText(chatId, `✅ Model → *${argText}*`, msg);
+  }
+
+  if (cmd === "/safe" || cmd === "/safe-mode") {
+    if (!boss) return sendText(chatId, "❌ Boss only.", msg);
+    const arg = argText.toLowerCase();
+    if (arg !== "on" && arg !== "off") {
+      const cur = getChatConfig(chatId).safe_mode ? "ON" : "OFF";
+      return sendText(chatId, `🔒 Safe mode: *${cur}*\n\n/safe on - konfirmasi sebelum action risky\n/safe off - eksekusi langsung`, msg);
+    }
+    setChatConfig(chatId, { safe_mode: arg === "on" ? 1 : 0 });
+    return sendText(chatId, `✅ Safe → *${arg.toUpperCase()}*`, msg);
+  }
+
+  if (cmd === "/permission") {
+    if (!boss) return sendText(chatId, "❌ Boss only.", msg);
+    const valid = ["bypassPermissions", "default", "acceptEdits", "auto", "plan", "dontAsk"];
+    if (!argText) {
+      const cur = getChatConfig(chatId).permission_mode || (process.env.CLAUDE_PERMISSION_MODE || "bypassPermissions");
+      return sendText(chatId, `🔐 Permission: *${cur}*\n\nValid: ${valid.join(", ")}`, msg);
+    }
+    if (!valid.includes(argText)) return sendText(chatId, `❌ Invalid: ${argText}`, msg);
+    setChatConfig(chatId, { permission_mode: argText });
+    return sendText(chatId, `✅ Permission → *${argText}*`, msg);
+  }
+
+  if (cmd === "/boss-add") {
+    if (!boss) return sendText(chatId, "❌ Boss only.", msg);
+    const newJid = addBoss(argText);
+    return sendText(chatId, newJid ? `✅ Boss: \`${newJid}\`` : "❌ Format salah.", msg);
+  }
+  if (cmd === "/boss-remove") {
+    if (!boss) return sendText(chatId, "❌ Boss only.", msg);
+    return sendText(chatId, removeBoss(argText) ? "✅ Removed." : "❌ Gak ketemu.", msg);
+  }
+  if (cmd === "/list-bosses") {
+    const list = listBosses();
+    if (!list.length) return sendText(chatId, "📭 Belum ada boss.", msg);
+    return sendText(chatId, `👑 *BOSSES:*\n${list.map(b => `• \`${b.jid}\`${b.name ? " - " + b.name : ""}`).join("\n")}`, msg);
+  }
+  if (cmd === "/list-chats") {
+    if (!boss) return sendText(chatId, "❌ Boss only.", msg);
+    const list = getChatList();
+    if (!list.length) return sendText(chatId, "📭 Belum ada chat.", msg);
+    return sendText(chatId, `📋 *CHATS:*\n${list.map(c => `• ${c.is_group ? "👥" : "👤"} *${c.chat_name || c.chat_id}* (${c.msg_count})`).join("\n")}`, msg);
+  }
+
+  if (cmd === "/dm-on" || cmd === "/dm-off") {
+    if (!boss) return sendText(chatId, "❌ Boss only.", msg);
+    setChatConfig(chatId, { auto_respond_dm: cmd === "/dm-on" ? 1 : 0 });
+    return sendText(chatId, `✅ DM auto-respond = ${cmd === "/dm-on" ? "ON" : "OFF"}`, msg);
+  }
+  if (cmd === "/listen-on" || cmd === "/listen-off") {
+    if (!boss) return sendText(chatId, "❌ Boss only.", msg);
+    setChatConfig(chatId, { listen_only: cmd === "/listen-on" ? 1 : 0 });
+    return sendText(chatId, `✅ Listen-only = ${cmd === "/listen-on" ? "ON" : "OFF"}`, msg);
+  }
+
+  if (cmd === "/summarize") {
+    const n = parseInt(argText, 10) || 30;
+    const msgs = getRecentMessages(chatId, n);
+    if (!msgs.length) return sendText(chatId, "❌ Belum ada pesan.", msg);
+    return processUserMessage(chatId, `Tolong summarize ${n} pesan terakhir di chat ini secara ringkas. Sebut siapa ngomong apa.`, msg, isGroup);
+  }
+  if (cmd === "/whosaid") {
+    if (!argText) return sendText(chatId, "Format: /whosaid <kata>", msg);
+    const found = searchMessages(chatId, argText, 15);
+    if (!found.length) return sendText(chatId, `❌ Gak ada pesan dengan "${argText}"`, msg);
+    return sendText(chatId, `🔍 *"${argText}":*\n\n${found.map(f => `• *${f.sender_name || "?"}*: ${(f.text || "").slice(0, 100)}`).join("\n")}`, msg);
+  }
+  if (cmd === "/language") {
+    const all = translate.listLangs();
+    if (!argText) {
+      const lines = all.map((l, i) => `*${i + 1}.* \`${l.code}\` — ${l.name}`);
+      return sendText(chatId, `🌐 *PILIH BAHASA* (${all.length})\n\n${lines.join("\n")}\n\nReply nomor (e.g. *3*), atau pakai \`/language <code>\` langsung.`, msg);
+    }
+    let chosen = null;
+    if (/^\d+$/.test(argText)) chosen = all[parseInt(argText, 10) - 1];
+    else chosen = all.find(l => l.code === argText.toLowerCase() || l.name.toLowerCase() === argText.toLowerCase());
+    if (!chosen) return sendText(chatId, `❌ "${argText}" gak valid. /language tanpa argumen untuk liat list.`, msg);
+    if (!boss) return sendText(chatId, "❌ Boss only.", msg);
+    translate.setChatLang(chatId, chosen.code);
+    audit.log({ chat_id: chatId, sender_jid: senderJid, action: "lang_set", target: chosen.code });
+    return sendText(chatId, `✅ Bahasa → *${chosen.name}* (\`${chosen.code}\`)\n\nClaude reply pakai bahasa ini. Aktifkan auto-translate incoming: /translate auto`, msg);
+  }
+
+  if (cmd === "/import") {
+    if (!boss) return sendText(chatId, "❌ Boss only.", msg);
+    if (!argText) return sendText(chatId, `📚 *Import to RAG*\n\n/import url <http://...>\n/import text <text body>\n/import file (reply ke pesan dengan file)\n/imports — list\n/import-delete <id>`, msg);
+    const sub = parts[1]?.toLowerCase();
+    const rest = text.slice(text.indexOf(sub) + sub.length).trim();
+    try {
+      let result;
+      if (sub === "url") {
+        result = await knowledge.importFromUrl({ url: rest, ownerJid: senderJid, chatId });
+      } else if (sub === "text") {
+        result = knowledge.importFromText({ text: rest, ownerJid: senderJid, chatId });
+      } else if (sub === "file") {
+        const quoted = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
+        if (!quoted) return sendText(chatId, "Reply ke pesan dengan file dulu, baru /import file", msg);
+        const qStanza = msg.message?.extendedTextMessage?.contextInfo?.stanzaId;
+        const qMsg = db.prepare("SELECT media_path, media_filename FROM messages WHERE message_id=?").get(qStanza);
+        if (!qMsg?.media_path) return sendText(chatId, "❌ File asal gak ke-save.", msg);
+        result = await knowledge.importFromFile({ filePath: qMsg.media_path, ownerJid: senderJid, chatId, title: qMsg.media_filename });
+      } else {
+        return sendText(chatId, "Format: /import url|text|file ...", msg);
+      }
+      audit.log({ chat_id: chatId, sender_jid: senderJid, action: "kb_import", target: `#${result.id}`, detail: result.title });
+      return sendText(chatId, `✅ Imported #${result.id}: *${result.title}*\nLength: ${result.length} char\n\nSekarang queryable di RAG.`, msg);
+    } catch (err) { return sendText(chatId, `❌ ${err.message}`, msg); }
+  }
+
+  if (cmd === "/imports") {
+    const list = knowledge.listImports(30, boss ? null : senderJid);
+    if (!list.length) return sendText(chatId, "📭 Belum ada import. /import url <...>", msg);
+    return sendText(chatId, `📚 *KB Imports (${list.length}):*\n\n${list.map(k => `#${k.id} [${k.source_type}] *${k.title}* (${k.length} char)\n  _${k.created_at}_`).join("\n\n")}`, msg);
+  }
+
+  if (cmd === "/import-delete") {
+    if (!boss) return sendText(chatId, "❌ Boss only.", msg);
+    const id = parseInt(argText, 10);
+    return sendText(chatId, knowledge.deleteImport(id) ? `🗑️ Import #${id} dihapus.` : `❌`, msg);
+  }
+
+  if (cmd === "/pilih" || cmd === "/pick") {
+    const pending = buttonsMod.getLatestPending(chatId);
+    if (!pending) return sendText(chatId, "❌ Gak ada pertanyaan pending.", msg);
+    const r = buttonsMod.resolveButtonReply(pending.id, argText);
+    if (!r) return sendText(chatId, "❌ Pilihan gak valid.", msg);
+    await enqueueOrRun(chatId, `(User pilih: *${r.picked.label}* / id=${r.picked.id})`, msg, isGroup, senderJid);
+    return true;
+  }
+
+  if (cmd === "/remembered") {
+    const list = buttonsMod.listRemembered(chatId);
+    if (!list.length) return sendText(chatId, "📭 Belum ada decision tersimpan.", msg);
+    return sendText(chatId, `🧠 *Remembered decisions:*\n\n${list.map(r => `• ${r.pattern} → *${r.decision}*`).join("\n")}\n\n/forget <pattern> untuk hapus`, msg);
+  }
+  if (cmd === "/forget") {
+    if (!boss) return sendText(chatId, "❌ Boss only.", msg);
+    const ok = buttonsMod.clearRemembered(chatId, argText || null);
+    return sendText(chatId, ok ? `✅ Cleared.` : `❌ Gak ada.`, msg);
+  }
+
+  if (cmd === "/event") {
+    if (!boss) return sendText(chatId, "❌ Boss only.", msg);
+    if (!argText) return sendText(chatId, "Format: /event <judul> @ <waktu>\nContoh:\n/event Meeting design @ besok 14:00\n/event Deadline laporan @ 2026-05-20 17:00", msg);
+    const m = argText.match(/^(.+?)\s*@\s*(.+)$/);
+    if (!m) return sendText(chatId, "Format: /event <judul> @ <waktu>", msg);
+    const start = calendar.parseHumanDateTime(m[2]);
+    if (!start) return sendText(chatId, `❌ Waktu gak valid: "${m[2]}"`, msg);
+    const e = calendar.createEvent({ ownerJid: senderJid, chatId, title: m[1].trim(), startAt: start.toISOString() });
+    audit.log({ chat_id: chatId, sender_jid: senderJid, action: "event_create", target: `#${e.id}`, detail: m[1].trim() });
+    return sendText(chatId, `📅 Event #${e.id} *${m[1].trim()}*\n🕐 ${start.toLocaleString("id-ID")}\n\n/ics <id> untuk dapet file calendar`, msg);
+  }
+  if (cmd === "/events") {
+    const list = calendar.listEvents({ ownerJid: boss ? null : senderJid, fromDate: new Date().toISOString() });
+    if (!list.length) return sendText(chatId, "📭 Gak ada event upcoming.", msg);
+    return sendText(chatId, `📅 *Upcoming events (${list.length}):*\n\n${list.map(e => `#${e.id} *${e.title}*\n  🕐 ${new Date(e.start_at).toLocaleString("id-ID")}${e.location ? "\n  📍 " + e.location : ""}`).join("\n\n")}`, msg);
+  }
+  if (cmd === "/ics") {
+    const id = parseInt(argText, 10);
+    const list = id ? [calendar.getEvent(id)].filter(Boolean) : calendar.listEvents({ ownerJid: boss ? null : senderJid, fromDate: new Date().toISOString() });
+    if (!list.length) return sendText(chatId, "❌ Event gak ada.", msg);
+    const r = calendar.exportIcsToFile(list);
+    await sendDocument(chatId, r.path, r.filename, `📅 Calendar export (${list.length} event). Import ke Google Calendar / Outlook / Apple Calendar.`, msg);
+    return true;
+  }
+  if (cmd === "/cal") {
+    const sub = parts[1]?.toLowerCase();
+    if (sub === "delete" || sub === "del") {
+      if (!boss) return sendText(chatId, "❌ Boss only.", msg);
+      return sendText(chatId, calendar.deleteEvent(parseInt(parts[2], 10)) ? `🗑️ Deleted.` : `❌`, msg);
+    }
+    return sendText(chatId, `📅 Calendar:\n/event <title> @ <time>\n/events\n/ics [id]\n/cal delete <id>`, msg);
+  }
+
+  if (cmd === "/lang") {
+    const cur = translate.getChatLangConfig(chatId);
+    if (!argText) {
+      const langs = translate.listLangs().map(l => `${l.code}:${l.name}`).join(", ");
+      return sendText(chatId, `🌐 *Lang preference:* ${cur.preferred || "(none)"}\n*Auto-translate mode:* ${cur.mode || "off"}\n\nLangs: ${langs}\n\n/lang <code> - set preferred (Claude reply pakai bahasa ini)\n/lang off - clear\n/translate auto - enable auto translate incoming foreign msg\n/translate off - disable`, msg);
+    }
+    if (!boss) return sendText(chatId, "❌ Boss only.", msg);
+    if (argText === "off") {
+      translate.setChatLang(chatId, null, "off");
+      return sendText(chatId, "✅ Lang cleared.", msg);
+    }
+    if (!translate.LANG_NAMES[argText]) return sendText(chatId, `❌ Lang code "${argText}" gak valid.`, msg);
+    translate.setChatLang(chatId, argText);
+    return sendText(chatId, `✅ Lang → *${argText}* (${translate.LANG_NAMES[argText]}). Claude reply bakal pake bahasa ini.`, msg);
+  }
+
+  if (cmd === "/translate") {
+    if (!argText) {
+      const cur = translate.getChatLangConfig(chatId);
+      return sendText(chatId, `🌐 *Translate mode:* ${cur.mode}\n*Target lang:* ${cur.preferred || "(set via /lang)"}\n\n/translate auto - auto-translate incoming foreign\n/translate off - matikan\n/translate <text> to <lang> - translate teks sekali`, msg);
+    }
+    const toMatch = argText.match(/^(.+?)\s+to\s+([a-z]{2})$/i);
+    if (toMatch) {
+      try {
+        const out = await translate.translateText(toMatch[1], toMatch[2].toLowerCase());
+        return sendText(chatId, `🌐 _→${toMatch[2]}_\n${out}`, msg);
+      } catch (err) { return sendText(chatId, `❌ ${err.message}`, msg); }
+    }
+    if (!boss) return sendText(chatId, "❌ Boss only.", msg);
+    if (argText === "auto" || argText === "on") {
+      const cur = translate.getChatLangConfig(chatId);
+      if (!cur.preferred) return sendText(chatId, "❌ Set /lang <code> dulu.", msg);
+      translate.setChatLang(chatId, undefined, "auto");
+      return sendText(chatId, `✅ Auto-translate → ON. Pesan bahasa lain auto-translate ke ${cur.preferred}.`, msg);
+    }
+    if (argText === "off") {
+      translate.setChatLang(chatId, undefined, "off");
+      return sendText(chatId, "✅ Auto-translate → OFF.", msg);
+    }
+    return sendText(chatId, "Format salah. /translate auto | off | <text> to <lang>", msg);
+  }
+
+  if (cmd === "/budget") {
+    const sub = parts[1]?.toLowerCase();
+    if (sub === "set") {
+      if (!boss) return sendText(chatId, "❌ Boss only.", msg);
+      const jidArg = parts[2];
+      const usd = parseFloat(parts[3]);
+      if (!jidArg || isNaN(usd)) return sendText(chatId, "Format: /budget set <jid/number> <usd>\nContoh: /budget set 6281234567890 5.0\n(0 = unlimited)", msg);
+      const targetJid = require("./bosses").normalizeJid(jidArg);
+      budgets.setLimit(targetJid, usd);
+      audit.log({ chat_id: chatId, sender_jid: senderJid, action: "budget_set", target: targetJid, detail: `$${usd}/day` });
+      return sendText(chatId, `✅ Budget ${targetJid}: $${usd}/day`, msg);
+    }
+    if (sub === "all") {
+      if (!boss) return sendText(chatId, "❌ Boss only.", msg);
+      const list = budgets.listBudgets();
+      if (!list.length) return sendText(chatId, "📭 Belum ada budget tracked.", msg);
+      const lines = list.slice(0, 30).map(b => `• \`${b.user_jid.split("@")[0]}\` $${b.used_usd_today.toFixed(4)}/$${b.daily_limit_usd.toFixed(2)} (total $${b.used_usd_total.toFixed(2)}, ${b.total_requests}x)`);
+      return sendText(chatId, `💰 *Budgets (${list.length}):*\n\n${lines.join("\n")}`, msg);
+    }
+    const targetJid = sub ? require("./bosses").normalizeJid(sub) : senderJid;
+    const b = budgets.getBudget(targetJid);
+    if (!b) { budgets.ensureBudget(targetJid, isBoss(targetJid)); return sendText(chatId, `💰 Budget ${targetJid}: baru ke-init. Coba lagi.`, msg); }
+    const pct = b.daily_limit_usd > 0 ? (b.used_usd_today / b.daily_limit_usd * 100).toFixed(1) : 0;
+    return sendText(chatId, `💰 *Budget ${b.user_jid.split("@")[0]}*\nHari ini: $${b.used_usd_today.toFixed(4)} / $${b.daily_limit_usd.toFixed(2)} (${pct}%)\nTotal lifetime: $${b.used_usd_total.toFixed(2)} (${b.total_requests} request)\nReset: ${b.last_reset_at}`, msg);
+  }
+  if (cmd === "/budgets") {
+    if (!boss) return sendText(chatId, "❌ Boss only.", msg);
+    const list = budgets.listBudgets();
+    if (!list.length) return sendText(chatId, "📭 Empty.", msg);
+    const lines = list.slice(0, 30).map(b => `• \`${b.user_jid.split("@")[0]}\` $${b.used_usd_today.toFixed(4)}/$${b.daily_limit_usd.toFixed(2)}`);
+    return sendText(chatId, `💰 *All budgets:*\n${lines.join("\n")}`, msg);
+  }
+
+  if (cmd === "/persona") {
+    const list = persona.listPersonas();
+    if (!argText) {
+      const cur = persona.getPersona(chatId);
+      return sendText(chatId, `🎭 Persona: *${cur.name}* (auto: ${cur.auto ? "🟢" : "🔴"})\n\n${list.map(p => `• \`${p.key}\` — ${p.label}`).join("\n")}\n• \`auto\` — adapt by speaker\n\nGanti: /persona casual | formal | professional | funny | technical | supportive | auto`, msg);
+    }
+    if (!boss) return sendText(chatId, "❌ Boss only.", msg);
+    if (!persona.setPersona(chatId, argText)) return sendText(chatId, `❌ Invalid: ${argText}`, msg);
+    audit.log({ chat_id: chatId, sender_jid: senderJid, sender_name: senderName, action: "persona_change", target: argText });
+    return sendText(chatId, `✅ Persona → *${argText}*`, msg);
+  }
+
+  if (cmd === "/remind") {
+    if (!argText) return sendText(chatId, "Format: /remind <waktu> <pesan>\nContoh:\n/remind 30m call John\n/remind 2h meeting design review\n/remind tomorrow 09:00 deadline laporan", msg);
+    const m = argText.match(/^(\S+)\s+(.+)$/);
+    if (!m) return sendText(chatId, "Format salah. /remind <waktu> <pesan>", msg);
+    const dueAt = scheduler.parseHumanDuration(m[1]);
+    if (!dueAt) return sendText(chatId, `❌ Waktu gak valid: "${m[1]}". Pakai: 30s/30m/2h/1d atau ISO date`, msg);
+    const r = scheduler.createReminder({ ownerJid: senderJid, targetChatId: chatId, dueAt, message: m[2] });
+    audit.log({ chat_id: chatId, sender_jid: senderJid, action: "reminder_create", target: `#${r.id}`, detail: m[2] });
+    return sendText(chatId, `⏰ Reminder #${r.id} set: *${new Date(dueAt).toLocaleString("id-ID")}*\n_${m[2]}_`, msg);
+  }
+  if (cmd === "/reminders") {
+    const list = scheduler.listReminders(senderJid);
+    if (!list.length) return sendText(chatId, "📭 Gak ada reminder aktif.", msg);
+    return sendText(chatId, `⏰ *Reminder aktif (${list.length}):*\n\n${list.map(r => `#${r.id} ${r.due_at.slice(0, 16).replace("T", " ")} — ${r.message}`).join("\n")}\n\nCancel: /remind cancel <id>`, msg);
+  }
+
+  if (cmd === "/cron") {
+    const sub = parts[1]?.toLowerCase();
+    if (sub === "add") {
+      if (!boss) return sendText(chatId, "❌ Boss only.", msg);
+      const rest = text.slice(text.indexOf("add") + 3).trim();
+      const cronMatch = rest.match(/^"([^"]+)"\s+(.+)$/) || rest.match(/^(\S+\s+\S+\s+\S+\s+\S+\s+\S+)\s+(.+)$/);
+      if (!cronMatch) return sendText(chatId, `Format: /cron add "<cron-expr>" <prompt>\nContoh: /cron add "0 8 * * *" ringkasin chat semalem`, msg);
+      const id = scheduler.createCron({ ownerJid: senderJid, targetChatId: chatId, name: null, cronExpr: cronMatch[1], prompt: cronMatch[2] });
+      audit.log({ chat_id: chatId, sender_jid: senderJid, action: "cron_create", target: `#${id}`, detail: cronMatch[1] });
+      return sendText(chatId, `⏱️ Cron #${id} added: \`${cronMatch[1]}\`\n_${cronMatch[2]}_`, msg);
+    }
+    if (sub === "list" || !sub) {
+      const list = scheduler.listCron(senderJid);
+      if (!list.length) return sendText(chatId, "📭 Gak ada cron.", msg);
+      return sendText(chatId, `⏱️ *Cron tasks (${list.length}):*\n\n${list.map(c => `${c.active ? "🟢" : "🔴"} #${c.id} \`${c.cron_expr}\` — ${c.prompt.slice(0, 60)}\n  next: ${c.next_run || "(none)"}`).join("\n\n")}`, msg);
+    }
+    if (sub === "delete" || sub === "del" || sub === "rm") {
+      if (!boss) return sendText(chatId, "❌ Boss only.", msg);
+      const id = parseInt(parts[2], 10);
+      return sendText(chatId, scheduler.deleteCron(id) ? `🗑️ Cron #${id} dihapus.` : `❌ Gak ada.`, msg);
+    }
+    if (sub === "pause") {
+      if (!boss) return sendText(chatId, "❌ Boss only.", msg);
+      const id = parseInt(parts[2], 10);
+      return sendText(chatId, scheduler.setCronActive(id, false) ? `⏸️ Cron #${id} paused.` : `❌`, msg);
+    }
+    if (sub === "resume") {
+      if (!boss) return sendText(chatId, "❌ Boss only.", msg);
+      const id = parseInt(parts[2], 10);
+      return sendText(chatId, scheduler.setCronActive(id, true) ? `▶️ Cron #${id} resumed.` : `❌`, msg);
+    }
+    return sendText(chatId, "Format: /cron add | list | delete <id> | pause <id> | resume <id>", msg);
+  }
+
+  if (cmd === "/audit") {
+    if (!boss) return sendText(chatId, "❌ Boss only.", msg);
+    const n = parseInt(argText, 10) || 20;
+    const rows = audit.recent({ limit: n });
+    if (!rows.length) return sendText(chatId, "📭 Audit log kosong.", msg);
+    const lines = rows.map(r => `[${r.created_at.slice(11, 16)}] *${r.action}* ${r.target || ""} ${r.detail ? `· ${r.detail.slice(0, 50)}` : ""}`);
+    return sendText(chatId, `📋 *Audit log (${rows.length} terakhir):*\n\n${lines.join("\n")}`, msg);
+  }
+
+  if (cmd === "/backup") {
+    if (!boss) return sendText(chatId, "❌ Boss only.", msg);
+    const sub = parts[1]?.toLowerCase();
+    if (sub === "now") {
+      const p = await backupMod.runBackup();
+      return sendText(chatId, p ? `✅ Backup: \`${p}\`` : "❌ Backup gagal.", msg);
+    }
+    const list = backupMod.listBackups();
+    if (!list.length) return sendText(chatId, "📭 Belum ada backup.", msg);
+    return sendText(chatId, `💾 *Backups (${list.length}):*\n\n${list.map(b => `• ${b.name} (${b.sizeKb}KB)`).join("\n")}\n\n/backup now untuk run sekarang`, msg);
+  }
+
+  if (cmd === "/users") {
+    if (!boss) return sendText(chatId, "❌ Boss only.", msg);
+    const list = userProfiles.listProfiles(20);
+    if (!list.length) return sendText(chatId, "📭 Belum ada user profile.", msg);
+    const lines = list.map(u => `• *${u.display_name || u.user_jid.split("@")[0]}* (${u.message_count}) ${u.communication_style ? "— " + u.communication_style : ""}`);
+    return sendText(chatId, `👥 *Users (${list.length}):*\n\n${lines.join("\n")}`, msg);
+  }
+  if (cmd === "/userprofile") {
+    const target = argText.trim();
+    let jid = target ? require("./bosses").normalizeJid(target) : senderJid;
+    const p = userProfiles.getProfile(jid);
+    if (!p) return sendText(chatId, `❌ Profile ${jid} gak ada.`, msg);
+    return sendText(chatId, `👤 *${p.display_name || "?"}*\nJID: \`${p.user_jid}\`\nMsgs: ${p.message_count}\nStyle: ${p.communication_style || "?"}\nTraits: ${p.traits || "?"}\nMinat: ${p.interests || "?"}`, msg);
+  }
+
+  if (cmd === "/pii") {
+    if (!argText) {
+      const cur = db.prepare("SELECT COUNT(*) AS c FROM messages WHERE pii_flags IS NOT NULL").get().c;
+      return sendText(chatId, `🔐 *PII Detection*\n${cur} pesan ke-flag PII.\n\nFormat:\n/pii check <text> — test pattern\n/pii recent [N] — list pesan ke-flag terakhir`, msg);
+    }
+    const sub = parts[1]?.toLowerCase();
+    if (sub === "check") {
+      const t = argText.slice(5).trim();
+      const findings = pii.detect(t);
+      if (!findings.length) return sendText(chatId, "✅ Aman, gak ada PII.", msg);
+      return sendText(chatId, `⚠️ *${findings.length} PII detected:*\n${findings.map(f => `• ${f.name} (${f.severity})`).join("\n")}`, msg);
+    }
+    if (sub === "recent") {
+      if (!boss) return sendText(chatId, "❌ Boss only.", msg);
+      const n = parseInt(parts[2], 10) || 10;
+      const rows = db.prepare("SELECT chat_name, sender_name, text, pii_flags, timestamp FROM messages WHERE pii_flags IS NOT NULL ORDER BY id DESC LIMIT ?").all(n);
+      if (!rows.length) return sendText(chatId, "📭 Gak ada PII flag.", msg);
+      return sendText(chatId, `🔐 *PII recent (${rows.length}):*\n\n${rows.map(r => `${r.chat_name} · ${r.sender_name}: ${JSON.parse(r.pii_flags).map(f => f.name).join(",")}`).join("\n")}`, msg);
+    }
+    return sendText(chatId, "Format: /pii check <text> | recent", msg);
+  }
+
+  if (cmd === "/wf" || cmd === "/workflow" || cmd === "/workflows") {
+    const sub = parts[1]?.toLowerCase();
+    if (!sub || sub === "list") {
+      const list = workflows.list(boss ? null : senderJid);
+      if (!list.length) return sendText(chatId, "📭 Gak ada workflow. Boss bisa bikin via natural language atau /wf create", msg);
+      return sendText(chatId, `🔄 *Workflows (${list.length}):*\n\n${list.map(w => `${w.status === "active" ? "🟢" : w.status === "pending_approval" ? "⏸️" : "🔴"} #${w.id} *${w.name}*\n  ${w.description?.slice(0, 80) || ""}\n  Trigger: ${w.trigger_type} | Runs: ${w.runs_count}`).join("\n\n")}`, msg);
+    }
+    if (sub === "approve") {
+      if (!boss) return sendText(chatId, "❌ Boss only.", msg);
+      const id = parseInt(parts[2], 10);
+      return sendText(chatId, workflows.approve(id) ? `✅ Workflow #${id} approved + active.` : `❌`, msg);
+    }
+    if (sub === "reject") {
+      if (!boss) return sendText(chatId, "❌ Boss only.", msg);
+      const id = parseInt(parts[2], 10);
+      return sendText(chatId, workflows.reject(id) ? `🚫 Workflow #${id} rejected.` : `❌`, msg);
+    }
+    if (sub === "pause") {
+      if (!boss) return sendText(chatId, "❌ Boss only.", msg);
+      const id = parseInt(parts[2], 10);
+      return sendText(chatId, workflows.pauseWf(id) ? `⏸️ Paused.` : `❌`, msg);
+    }
+    if (sub === "resume") {
+      if (!boss) return sendText(chatId, "❌ Boss only.", msg);
+      const id = parseInt(parts[2], 10);
+      return sendText(chatId, workflows.resumeWf(id) ? `▶️ Resumed.` : `❌`, msg);
+    }
+    if (sub === "delete" || sub === "del") {
+      if (!boss) return sendText(chatId, "❌ Boss only.", msg);
+      const id = parseInt(parts[2], 10);
+      return sendText(chatId, workflows.deleteWf(id) ? `🗑️ Deleted.` : `❌`, msg);
+    }
+    return sendText(chatId, "Format: /wf list | approve <id> | reject <id> | pause <id> | resume <id> | delete <id>", msg);
+  }
+
+  if (cmd === "/plugins") {
+    const list = plugins.list();
+    if (!list.length) return sendText(chatId, "📭 Gak ada plugin loaded. Drop file .js ke `plugins/`.", msg);
+    return sendText(chatId, `🔌 *Plugins (${list.length}):*\n\n${list.map(p => `• *${p.name}* (${p.file})${p.description ? "\n  " + p.description : ""}${p.commands?.length ? "\n  Commands: " + p.commands.join(", ") : ""}`).join("\n")}`, msg);
+  }
+  if (cmd === "/plugin-reload") {
+    if (!boss) return sendText(chatId, "❌ Boss only.", msg);
+    const loaded = plugins.load();
+    return sendText(chatId, `🔌 Reloaded ${loaded.length} plugin.`, msg);
+  }
+
+  if (cmd === "/embedstatus") {
+    const total = db.prepare("SELECT COUNT(*) AS c FROM messages WHERE text IS NOT NULL AND length(text) > 10").get().c;
+    const embedded = db.prepare("SELECT COUNT(*) AS c FROM embeddings").get().c;
+    return sendText(chatId, `🧠 *Embeddings:*\nTotal msgs: ${total}\nEmbedded: ${embedded} (${total ? (embedded / total * 100).toFixed(1) : 0}%)\nPending: ${total - embedded}`, msg);
+  }
+  if (cmd === "/embed-backfill") {
+    if (!boss) return sendText(chatId, "❌ Boss only.", msg);
+    await sendText(chatId, "⏳ Backfilling embeddings...", msg);
+    const n = parseInt(argText, 10) || 100;
+    const done = await embeddings.backfill(n);
+    return sendText(chatId, `✅ Backfilled ${done} embeddings.`, msg);
+  }
+
+  if (cmd === "/effort") {
+    const valid = ["low", "medium", "high", "xhigh", "max"];
+    if (!argText) {
+      const cur = getEffort(chatId) || "default";
+      return sendText(chatId, `⚡ Effort: *${cur}*\n\nLevel valid: ${valid.join(", ")}\n\n_low_ = cepat & murah\n_medium_ = balance\n_high_ = lebih dalem (default Claude)\n_xhigh_ = ekstra dalem\n_max_ = paling deep, paling mahal/lambat\n\nGanti: /effort medium`, msg);
+    }
+    if (!boss) return sendText(chatId, "❌ Boss only.", msg);
+    if (!valid.includes(argText)) return sendText(chatId, `❌ Invalid: ${argText}. Valid: ${valid.join(", ")}`, msg);
+    setEffort(chatId, argText);
+    return sendText(chatId, `✅ Effort → *${argText}*`, msg);
+  }
+
+  if (cmd === "/health") {
+    const dbSize = (fs.statSync(path.join(__dirname, "data", "wa.db")).size / 1024 / 1024).toFixed(2);
+    const msgCount = db.prepare("SELECT COUNT(*) AS c FROM messages").get().c;
+    const fileCount = db.prepare("SELECT COUNT(*) AS c FROM messages WHERE media_path IS NOT NULL").get().c;
+    const chatCount = db.prepare("SELECT COUNT(DISTINCT chat_id) AS c FROM messages").get().c;
+    const profileCount = db.prepare("SELECT COUNT(*) AS c FROM group_profiles").get().c;
+    const bossCount = listBosses().length;
+    const sessCount = db.prepare("SELECT COUNT(*) AS c FROM chat_sessions").get().c;
+    const uptimeH = (process.uptime() / 3600).toFixed(2);
+    const memMb = (process.memoryUsage().rss / 1024 / 1024).toFixed(1);
+    const text =
+      `💚 *HEALTH CHECK*\n\n` +
+      `🤖 Bot uptime: ${uptimeH}h\n` +
+      `💾 RAM: ${memMb}MB\n` +
+      `🗄️ DB: ${dbSize}MB\n` +
+      `💬 Messages: ${msgCount.toLocaleString()}\n` +
+      `📎 Files: ${fileCount}\n` +
+      `💼 Chats tracked: ${chatCount}\n` +
+      `🗂️ Group profiles: ${profileCount}\n` +
+      `🗨️ Claude sessions: ${sessCount}\n` +
+      `👑 Bosses: ${bossCount}\n` +
+      `🟢 WS: ${botJid ? "connected" : "disconnected"}\n` +
+      `🎤 Voice: ${process.env.GROQ_API_KEY ? "🟢 Groq" : "🔴"}\n` +
+      `🔒 Secret code: ${process.env.BOSS_SECRET_CODE ? "🟢 set" : "🔴"}\n` +
+      `🧠 RAG: ✅ FTS5 enabled`;
+    return sendText(chatId, text, msg);
+  }
+
+  if (cmd === "/send") {
+    if (!boss) return sendText(chatId, "❌ Boss only.", msg);
+    if (!argText) return sendText(chatId, "Format: /send <path>", msg);
+    let p = argText;
+    if (!path.isAbsolute(p)) p = path.resolve(getCwd(chatId), p);
+    if (!fs.existsSync(p)) return sendText(chatId, `❌ File gak ada: \`${p}\``, msg);
+    await sendDocument(chatId, p, path.basename(p), "", msg);
+    return true;
+  }
+
+  if (cmd === "/analyze") {
+    if (!argText) return sendText(chatId, "Format: /analyze <path>", msg);
+    let p = argText;
+    if (!path.isAbsolute(p)) p = path.resolve(getCwd(chatId), p);
+    if (!fs.existsSync(p)) return sendText(chatId, `❌ File gak ada: \`${p}\``, msg);
+    const { analyzeFile } = require("./file_analyzer");
+    const r = await analyzeFile(p);
+    if (!r.ok) return sendText(chatId, `❌ ${r.error}`, msg);
+    const metaStr = r.meta ? ` (${Object.entries(r.meta).map(([k, v]) => `${k}=${Array.isArray(v) ? v.length : v}`).join(", ")})` : "";
+    return sendText(chatId, `📄 *Analyze ${path.basename(p)}*${metaStr}\nSize: ${r.sizeKb}KB | Extracted: ${r.length} chars\n\n*Preview:*\n\`\`\`\n${r.preview}\n\`\`\``, msg);
+  }
+
+  if (cmd === "/search") {
+    if (!argText) return sendText(chatId, "Format: /search <keyword>\nMencari di SEMUA group/chat yang pernah dipantau bot.", msg);
+    const matches = rag.searchAllMessages(argText, { limit: 15 });
+    if (!matches.length) return sendText(chatId, `❌ Gak ada match "${argText}" di seluruh chat.`, msg);
+    const lines = matches.map((m, i) => {
+      const time = new Date(m.timestamp * 1000).toISOString().slice(0, 16).replace("T", " ");
+      const sender = m.from_me ? "[BOT]" : (m.sender_name || "?");
+      const where = m.is_group ? `👥 ${m.chat_name}` : `👤 DM`;
+      return `${i + 1}. [${time}] *${sender}* @ ${where}\n   ${(m.text || "(media)").slice(0, 150)}${m.media_filename ? "\n   📎 " + m.media_filename : ""}`;
+    });
+    return sendText(chatId, `🔎 *SEARCH "${argText}" (${matches.length} match)*\n\n${lines.join("\n\n")}`, msg);
+  }
+
+  if (cmd === "/topics") {
+    const profiles = rag.getGroupProfiles(null, 30);
+    if (!profiles.length) return sendText(chatId, "📭 Belum ada group profile. /profile-gen untuk generate sekarang.", msg);
+    const lines = profiles.map((p, i) => `${i + 1}. *${p.chat_name}* (${p.message_count} msg)\n   📌 ${p.topic}\n   _${p.summary || ""}_`);
+    return sendText(chatId, `🗂️ *KNOWN GROUPS (${profiles.length}):*\n\n${lines.join("\n\n")}`, msg);
+  }
+
+  if (cmd === "/profile") {
+    const chatName = await getChatName(chatId);
+    const p = db.prepare("SELECT * FROM group_profiles WHERE chat_id=?").get(chatId);
+    if (!p) return sendText(chatId, `📭 Belum ada profile untuk "${chatName}". /profile-gen untuk generate.`, msg);
+    return sendText(chatId, `🗂️ *${p.chat_name}*\n📌 Topik: ${p.topic}\n_${p.summary || ""}_\n\nMsg count: ${p.message_count}\nGenerated: ${p.last_generated_at}`, msg);
+  }
+
+  if (cmd === "/profile-gen") {
+    if (!boss) return sendText(chatId, "❌ Boss only.", msg);
+    const chatName = await getChatName(chatId);
+    await sendText(chatId, `⏳ Generating profile untuk "${chatName}"...`, msg);
+    try {
+      const all = db.prepare("SELECT chat_id, chat_name, COUNT(*) AS msg_count, MAX(timestamp) AS last_msg_at FROM messages WHERE chat_id=? GROUP BY chat_id").get(chatId);
+      if (!all || all.msg_count < 5) return sendText(chatId, `❌ Pesan terlalu sedikit (${all?.msg_count || 0}). Minimal 5.`, msg);
+      const result = await generateProfileFor(all);
+      if (!result) return sendText(chatId, "❌ Generate gagal.", msg);
+      return sendText(chatId, `✅ *${chatName}*\n📌 ${result.topic}\n_${result.summary}_`, msg);
+    } catch (err) {
+      return sendText(chatId, `❌ ${err.message.slice(0, 200)}`, msg);
+    }
+  }
+
+  if (cmd === "/files") {
+    const chatName = await getChatName(chatId);
+    const files = listChatFiles(chatName, 30);
+    if (!files.length) return sendText(chatId, `📭 Belum ada file di chat "${chatName}".`, msg);
+    const lines = files.map((f, i) => `${i + 1}. ${f.name} (${(f.size / 1024).toFixed(1)}KB)`);
+    return sendText(chatId, `📎 *File di "${chatName}" (${files.length}):*\n\n${lines.join("\n")}\n\n_Path: data/files/${chatName}/_`, msg);
+  }
+
+  if (cmd === "/recent") {
+    const n = Math.min(parseInt(argText, 10) || 15, 50);
+    const msgs = getRecentMessages(chatId, n);
+    if (!msgs.length) return sendText(chatId, "❌ Kosong.", msg);
+    return sendText(chatId, `📋 *${n} pesan terakhir:*\n\n${msgs.map(m => `• *${m.sender_name || "?"}*: ${(m.text || "(media)").slice(0, 80)}`).join("\n")}`, msg);
+  }
+
+  return false;
+}
+
+async function processUserMessage(chatId, userText, quotedMsg, isGroup, senderJid = null) {
+  const tracker = new ProgressTracker(chatId, quotedMsg);
+  let result = null;
+  try {
+    const context = getRecentMessages(chatId, 25);
+    let lastThinkingAt = 0;
+    result = await streamMessage(userText, chatId, context, isGroup, (evt) => {
+      if (evt.type === "tool_use") tracker.addStep(evt.label).catch(() => {});
+      else if (evt.type === "thinking") {
+        const now = Date.now();
+        if (now - lastThinkingAt > 5000) {
+          lastThinkingAt = now;
+          tracker.addStep("💭 thinking").catch(() => {});
+        }
+      }
+    }, senderJid);
+    await tracker.finalize(true);
+  } catch (err) {
+    console.error("processUserMessage:", err);
+    await tracker.finalize(false);
+    if (err.code === "BUDGET_EXCEEDED") {
+      const b = err.budget;
+      await sendText(chatId, `🚫 *Budget habis*\nLimit harian: $${b.daily_limit_usd.toFixed(2)}\nTerpakai hari ini: $${b.used_usd_today.toFixed(4)}\nReset jam 00:00.\n\nBoss bisa naikin via /budget set <jid> <usd>`, quotedMsg);
+    } else {
+      await sendText(chatId, `❌ Error: ${err.message.slice(0, 400)}`, quotedMsg);
+    }
+    return;
+  }
+
+  const chartUrls = extractChartUrls(result.text);
+  for (const url of chartUrls) {
+    await sendImage(chatId, url, "", quotedMsg);
+  }
+
+  const { cleaned: afterAttach, files: attachFiles } = extractAttachMarkers(result.text);
+  for (const f of attachFiles) {
+    console.log(`[ATTACH] sending file: ${f.path}`);
+    await sendDocument(chatId, f.path, f.name, "", quotedMsg);
+  }
+
+  const { cleaned: afterRemember, pattern: rememberPat } = buttonsMod.extractRememberPattern(afterAttach);
+  const { cleaned: afterButtons, buttons } = buttonsMod.extractButtonMarker(afterRemember);
+
+  if (buttons && buttons.length) {
+    const choicesTxt = `${afterButtons || "Pilih opsi:"}\n\n${buttonsMod.formatChoicesText(buttons)}\n\n_Reply nomor atau ketik /pilih <n>_`;
+    const r = await sendText(chatId, choicesTxt, quotedMsg);
+    buttonsMod.recordPendingChoice({ chatId, ownerJid: senderJid, messageKey: r?.key, options: buttons, rememberPattern: rememberPat });
+    return;
+  }
+
+  const clean = sanitizeMarkdown(afterButtons.replace(/https:\/\/quickchart\.io\/chart\/render\/[a-zA-Z0-9_-]+/g, "")).trim();
+  if (!clean && chartUrls.length === 0 && attachFiles.length === 0) {
+    await sendText(chatId, "_(jawaban kosong)_", quotedMsg);
+    return;
+  }
+  if (!clean) return;
+
+  const parts = splitLong(clean);
+  const usedTools = tracker.steps.length > 0;
+  const showMeta = usedTools || result.duration > 5000 || (result.cost || 0) > 0.001;
+  const eff = getEffort(chatId);
+  const meta = showMeta
+    ? `\n\n_${result.model}${eff ? "/" + eff : ""} · ${(result.duration / 1000).toFixed(1)}s · $${(result.cost || 0).toFixed(4)}_`
+    : "";
+  for (let i = 0; i < parts.length; i++) {
+    const p = parts[i];
+    if (!p || !p.trim()) continue;
+    const isLast = i === parts.length - 1;
+    await sendText(chatId, isLast ? p + meta : p, quotedMsg);
+  }
+}
+
+async function handleMessage(m) {
+  const msg = m.messages?.[0];
+  if (!msg || !msg.message) return;
+  const chatIdRaw = msg.key.remoteJid;
+  if (!chatIdRaw || chatIdRaw === "status@broadcast") return;
+  const chatId = jidNormalizedUser(chatIdRaw);
+  const fromMe = !!msg.key.fromMe;
+  const isGroup = chatId.endsWith("@g.us");
+  const senderRaw = isGroup ? (msg.key.participant || msg.participant) : chatIdRaw;
+  const senderJid = senderRaw ? jidNormalizedUser(senderRaw) : null;
+  const senderName = msg.pushName || (senderJid ? senderJid.split("@")[0] : "?");
+  let text = extractText(msg.message);
+  const quoted = extractQuoted(msg.message);
+  const mentions = extractMentions(msg.message);
+  const isVoice = isVoiceMessage(msg.message);
+  const mediaType = detectMediaType(msg.message);
+  const chatName = await getChatName(chatId);
+
+  if (isVoice && !fromMe) {
+    try {
+      await sock.sendPresenceUpdate("composing", chatId);
+      const transcript = await transcribeWhatsappVoice(msg, logger);
+      if (transcript) {
+        text = transcript;
+        console.log(`[VOICE] ${senderJid}: "${text.slice(0, 80)}"`);
+        await sendText(chatId, `🎤 _"${text}"_`, msg);
+      }
+    } catch (err) {
+      console.error("voice err:", err.message);
+      await sendText(chatId, `❌ Gagal transkrip voice: ${err.message.slice(0, 200)}`, msg);
+      return;
+    }
+  }
+
+  let mediaInfo = null;
+  let fileOnlyMessage = false;
+  if (mediaType && !fromMe) {
+    const isImage = mediaType === "image";
+    const hasCaption = !!extractMediaMetaCaption(msg.message, mediaType);
+    const mentionedBotEarly = isMentionedBot(mentions, botJid);
+    const repliedBotEarly = isReplyToBot(quoted, botJid);
+    const wantsAttention = isImage
+      ? (mentionedBotEarly || repliedBotEarly)
+      : (hasCaption || mentionedBotEarly || repliedBotEarly);
+    const silentImage = isImage && !wantsAttention;
+
+    if (silentImage) {
+      try {
+        mediaInfo = await downloadAndSave(msg, chatName, mediaType, logger);
+        if (mediaInfo) {
+          console.log(`[MEDIA-SILENT] image saved: ${mediaInfo.filename} (${(mediaInfo.size / 1024).toFixed(1)}KB)${mediaInfo.caption ? " caption=\"" + mediaInfo.caption.slice(0, 40) + "\"" : ""}`);
+          await reactMsg(chatId, msg.key, "💾");
+          if (!text) text = mediaInfo.caption || `[image: ${mediaInfo.filename}]`;
+          if (process.env.GROQ_API_KEY) {
+            (async () => {
+              try {
+                const desc = await vision.describeImage(mediaInfo.path, { mimetype: mediaInfo.mimetype });
+                if (desc) {
+                  mediaInfo.visionDesc = desc;
+                  db.prepare("UPDATE messages SET vision_desc=? WHERE message_id=?").run(desc, msg.key.id);
+                  console.log(`[VISION-SILENT] ${mediaInfo.filename}: ${desc.slice(0, 80)}`);
+                }
+              } catch (err) { console.error("silent vision:", err.message); }
+            })();
+          }
+        }
+      } catch (err) { console.error("silent image:", err.message); }
+    } else {
+      await sock.sendPresenceUpdate("composing", chatId).catch(() => {});
+      const ackMsg = await sendText(chatId, `📥 _menerima file..._`, msg);
+      try {
+        mediaInfo = await downloadAndSave(msg, chatName, mediaType, logger);
+      } catch (err) { console.error("media download:", err.message); }
+      if (mediaInfo) {
+        console.log(`[MEDIA] ${mediaType} from ${senderJid}: ${mediaInfo.filename} (${(mediaInfo.size / 1024).toFixed(1)}KB) → ${mediaInfo.path}`);
+        const captionInfo = mediaInfo.caption ? ` — "${mediaInfo.caption}"` : "";
+        if (!text) {
+          text = mediaInfo.caption || `[${mediaType}: ${mediaInfo.filename}${captionInfo}]`;
+          fileOnlyMessage = !mediaInfo.caption;
+        }
+        let summary = `📎 *${mediaInfo.filename}* (${(mediaInfo.size / 1024).toFixed(1)}KB)`;
+        if (mediaInfo.extraction) {
+          const meta = mediaInfo.extraction.meta || {};
+          const metaBits = [];
+          if (meta.pages) metaBits.push(`${meta.pages} halaman`);
+          if (meta.sheets) metaBits.push(`${meta.sheets.length} sheet`);
+          if (meta.slideCount) metaBits.push(`${meta.slideCount} slide`);
+          if (meta.lines) metaBits.push(`${meta.lines} baris`);
+          if (metaBits.length) summary += ` · ${metaBits.join(", ")}`;
+          summary += `\n✅ Extract OK (${mediaInfo.extraction.length} char)`;
+        } else if (isImage && process.env.GROQ_API_KEY) {
+          try {
+            const desc = await vision.describeImage(mediaInfo.path, { mimetype: mediaInfo.mimetype });
+            if (desc) {
+              mediaInfo.visionDesc = desc;
+              db.prepare("UPDATE messages SET vision_desc=? WHERE message_id=?").run(desc, msg.key.id);
+              summary += `\n👁️ ${desc.slice(0, 200)}`;
+            }
+          } catch (err) { console.error("vision desc:", err.message); }
+        } else if (mediaType === "document") {
+          summary += `\n⚠️ Format belum bisa di-extract auto`;
+        }
+        if (ackMsg?.key) await editText(chatId, ackMsg.key, summary);
+        else await sendText(chatId, summary, msg);
+      } else {
+        if (ackMsg?.key) await editText(chatId, ackMsg.key, "❌ _gagal download file_");
+      }
+    }
+  }
+
+  console.log(`[MSG] ${isGroup ? "GROUP" : "DM"} chat=${chatId} sender=${senderJid} fromMe=${fromMe} boss=${isBoss(senderJid)} voice=${isVoice} media=${mediaType || "-"} text="${(text || "").slice(0, 60)}"`);
+
+  if (!text && !quoted && !mediaInfo) return;
+
+  if (fileOnlyMessage && mediaInfo) {
+    text = `(User kirim file tanpa caption: "${mediaInfo.filename}" — PATH=${mediaInfo.path}) Tolong baca isi file ini (extracted preview ada di context), kasih ringkasan singkat 3-5 kalimat. Kalau tabular sebut struktur kolom. Tutup dengan: "Mau gw analisa lebih dalem, atau ada yang mau lo lakuin dengan file ini?"`;
+  }
+
+  const piiFindings = pii.detect(text);
+  if (piiFindings.length) console.log(`[PII] ${senderJid} chat=${chatName}: ${piiFindings.map(f => f.name).join(",")}`);
+
+  saveMessage({
+    chat_id: chatId, chat_name: chatName, is_group: isGroup ? 1 : 0,
+    sender_jid: senderJid, sender_name: senderName, message_id: msg.key.id,
+    text, quoted_message_id: quoted?.id || null, quoted_text: quoted?.text || null,
+    quoted_sender_jid: quoted?.sender || null, mentioned_jids: JSON.stringify(mentions),
+    timestamp: msg.messageTimestamp, from_me: fromMe ? 1 : 0,
+    media_path: mediaInfo?.path || null,
+    media_filename: mediaInfo?.filename || null,
+    media_mimetype: mediaInfo?.mimetype || null,
+    media_caption: mediaInfo?.caption || null,
+    pii_flags: piiFindings.length ? JSON.stringify(piiFindings.map(f => ({ name: f.name, severity: f.severity }))) : null,
+    vision_desc: mediaInfo?.visionDesc || null
+  });
+  if (!fromMe) userProfiles.incrementActivity(senderJid, senderName);
+
+  if (!fromMe && text && text.length >= 4 && !text.startsWith("/")) {
+    try {
+      const tr = await translate.maybeTranslateIncoming(chatId, text);
+      if (tr && tr.text !== text) {
+        await sendText(chatId, `🌐 _${tr.from}→${tr.to}_\n${tr.text}`, msg);
+      }
+    } catch (err) { console.error("auto translate:", err.message); }
+  }
+
+  if (fromMe) return;
+
+  const chatCfg = getChatConfig(chatId);
+  if (chatCfg.listen_only) return;
+
+  const lastReply = lastReplyAt.get(chatId) || 0;
+  if (Date.now() - lastReply < COOLDOWN_MS) return;
+
+  const secretCode = process.env.BOSS_SECRET_CODE;
+  if (secretCode && text.trim() === secretCode) {
+    addBoss(senderJid, senderName);
+    console.log(`👑 SECRET CODE used by ${senderJid}`);
+    await sendText(chatId, `👑 Lo sekarang boss.\nJID: \`${senderJid}\`\n\nCoba: /help`, msg);
+    lastReplyAt.set(chatId, Date.now());
+    return;
+  }
+
+  const trimmed = text.trim();
+  if (/^[1-6]$/.test(trimmed)) {
+    const pending = buttonsMod.getLatestPending(chatId);
+    if (pending) {
+      const r = buttonsMod.resolveButtonReply(pending.id, trimmed);
+      if (r) {
+        await reactMsg(chatId, msg.key, "👉");
+        lastReplyAt.set(chatId, Date.now());
+        await enqueueOrRun(chatId, `(User pilih opsi: *${r.picked.label}* (id=${r.picked.id}))`, msg, isGroup, senderJid);
+        return;
+      }
+    }
+  }
+
+  if (text.startsWith("/")) {
+    const cmd = text.split(/\s+/)[0].toLowerCase();
+    const pluginResult = await plugins.handleCommand(cmd, { chatId, senderJid, senderName, text, isGroup, msg, sock });
+    if (pluginResult) {
+      if (pluginResult.reply) await sendText(chatId, pluginResult.reply, msg);
+      lastReplyAt.set(chatId, Date.now());
+      return;
+    }
+    const handled = await handleCommand(chatId, senderJid, text, isGroup, msg);
+    if (handled !== false) {
+      audit.log({ chat_id: chatId, sender_jid: senderJid, sender_name: senderName, action: "command", target: cmd });
+      lastReplyAt.set(chatId, Date.now());
+      return;
+    }
+  }
+
+  const mentioned = isMentionedBot(mentions, botJid);
+  const repliedToBot = isReplyToBot(quoted, botJid);
+  const senderIsBoss = isBoss(senderJid);
+
+  const silentImageOnly = mediaType === "image" && mediaInfo && !mentioned && !repliedToBot;
+
+  let shouldRespond = false;
+  if (isGroup) {
+    if (mentioned || repliedToBot) shouldRespond = true;
+  } else {
+    if ((senderIsBoss || chatCfg.auto_respond_dm) && !silentImageOnly) shouldRespond = true;
+  }
+  if (!shouldRespond) return;
+
+  try {
+    const triggerType = mediaInfo ? "file_in_chat" : "text_keyword";
+    const activeWfs = workflows.getActiveByTrigger(chatId, triggerType);
+    for (const wf of activeWfs) {
+      const ctxWf = { text, media_filename: mediaInfo?.filename, sender_jid: senderJid };
+      if (workflows.matchTriggerPattern(wf, ctxWf)) {
+        console.log(`[WORKFLOW] firing #${wf.id} (${wf.name})`);
+        const steps = JSON.parse(wf.steps_json || "[]");
+        for (const step of steps) {
+          try {
+            if (step.type === "send_to_chat") {
+              const promptText = (step.prompt || "Forward this:") + `\n\n${mediaInfo ? `File path: ${mediaInfo.path}\n` : ""}Content: ${(text || "").slice(0, 500)}`;
+              await enqueueOrRun(step.chat_id, promptText, null, step.chat_id.endsWith("@g.us"));
+            } else if (step.type === "analyze_file" && mediaInfo) {
+              await sendText(chatId, `🔄 _Workflow #${wf.id} jalan: analyzing file_`, msg);
+            }
+          } catch (err) { console.error(`workflow step err:`, err.message); }
+        }
+        workflows.incrementRuns(wf.id);
+        audit.log({ chat_id: chatId, sender_jid: senderJid, action: "workflow_fire", target: `#${wf.id}`, detail: wf.name });
+      }
+    }
+  } catch (err) { console.error("workflow check:", err.message); }
+
+  lastReplyAt.set(chatId, Date.now());
+  await reactMsg(chatId, msg.key, "⏳");
+  await sock.sendPresenceUpdate("composing", chatId).catch(() => {});
+  try {
+    await enqueueOrRun(chatId, text, msg, isGroup, senderJid);
+    await reactMsg(chatId, msg.key, "✅");
+  } catch (err) {
+    await reactMsg(chatId, msg.key, "❌");
+    throw err;
+  } finally {
+    await sock.sendPresenceUpdate("paused", chatId).catch(() => {});
+  }
+}
+
+async function start() {
+  const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+  const { version } = await fetchLatestBaileysVersion();
+
+  sock = makeWASocket({
+    version, auth: state, logger,
+    printQRInTerminal: false,
+    browser: ["Claude Code WA Bridge", "Chrome", "1.0"],
+    syncFullHistory: false,
+    markOnlineOnConnect: true,
+    connectTimeoutMs: 60000,
+    defaultQueryTimeoutMs: 60000,
+    keepAliveIntervalMs: 30000,
+    retryRequestDelayMs: 2000
+  });
+
+  sock.ev.on("creds.update", saveCreds);
+
+  sock.ev.on("connection.update", (update) => {
+    const { connection, lastDisconnect, qr } = update;
+    if (qr) {
+      console.log("\n📱 Scan QR di WhatsApp HP lo:\n");
+      qrcode.generate(qr, { small: true });
+      console.log("\n   WhatsApp → Settings → Linked Devices → Link a Device → Scan\n");
+    }
+    if (connection === "open") {
+      botJid = sock.user?.id ? jidNormalizedUser(sock.user.id) : null;
+      console.log(`✅ Connected: ${botJid || sock.user?.id}`);
+      console.log(`👑 Bosses: ${listBosses().length}`);
+    }
+    if (connection === "close") {
+      const reason = lastDisconnect?.error?.output?.statusCode;
+      const shouldReconnect = reason !== DisconnectReason.loggedOut;
+      console.log(`❌ Closed. reason=${reason} reconnect=${shouldReconnect}`);
+      if (shouldReconnect) setTimeout(start, 3000);
+      else console.log("⚠️  Logged out. Hapus data/auth + restart.");
+    }
+  });
+
+  sock.ev.on("messages.upsert", (m) => {
+    handleMessage(m).catch(err => console.error("handleMessage:", err.message));
+  });
+
+  process.on("uncaughtException", (err) => {
+    if (/Timed Out|Request Time-out|init queries/i.test(err.message || "")) return;
+    console.error("uncaughtException:", err.message);
+  });
+  process.on("unhandledRejection", (err) => {
+    const m = err?.message || String(err);
+    if (/Timed Out|Request Time-out|init queries/i.test(m)) return;
+    console.error("unhandledRejection:", m);
+  });
+}
+
+async function registerCommands() {
+  if (!sock) return;
+  // Placeholder — WhatsApp doesn't support bot commands menu like Telegram
+}
+
+(async () => {
+  console.log("🚀 WhatsApp ↔ Claude Code Bridge v2");
+  console.log(`Model default: ${DEFAULT_MODEL}`);
+  console.log(`Permission: ${process.env.CLAUDE_PERMISSION_MODE || "bypassPermissions"}`);
+  console.log(`Default cwd: ${DEFAULT_CWD}`);
+  console.log(`Voice: ${process.env.GROQ_API_KEY ? "🟢 Groq Whisper" : "🔴 GROQ_API_KEY missing"}`);
+  console.log(`Secret code: ${process.env.BOSS_SECRET_CODE ? "🟢 set" : "🔴 not set"}`);
+  const bossesNow = listBosses();
+  console.log(`Bosses (${bossesNow.length}): ${bossesNow.map(b => b.jid).join(", ") || "(none)"}`);
+  try { require("./admin/server"); }
+  catch (err) { console.error("⚠️  Admin dashboard fail:", err.message); }
+
+  startProfileGenerator();
+  userProfiles.startUserProfileGenerator();
+  backupMod.startBackupScheduler();
+  plugins.load();
+  if (process.env.EMBEDDINGS_ENABLED !== "0") embeddings.startEmbeddingsBackground();
+  scheduler.startScheduler({
+    onReminderDue: async (r) => {
+      console.log(`[REMINDER] firing #${r.id} → ${r.target_chat_id}`);
+      await sendText(r.target_chat_id, `⏰ *Reminder*\n${r.message}`, null);
+      audit.log({ chat_id: r.target_chat_id, sender_jid: r.owner_jid, action: "reminder_fire", target: `#${r.id}` });
+    },
+    onCronDue: async (c) => {
+      console.log(`[CRON] firing #${c.id} → ${c.target_chat_id}`);
+      try {
+        await enqueueOrRun(c.target_chat_id, `[CRON #${c.id}: ${c.name}] ${c.prompt}`, null, c.target_chat_id.endsWith("@g.us"));
+        audit.log({ chat_id: c.target_chat_id, sender_jid: c.owner_jid, action: "cron_fire", target: `#${c.id}` });
+      } catch (err) { console.error("cron err:", err.message); }
+    }
+  });
+  await start();
+})();

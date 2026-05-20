@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Futsal Dashboard</title>
+<style>
+  :root { --bg:#0a0e1a; --card:#141a2e; --border:#2a3052; --text:#e8ecf5; --muted:#8a92a8; --accent:#26a69a; --danger:#ef5350; --warn:#ffa726; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:-apple-system,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--text); }
+  header { background:var(--card); padding:14px 20px; border-bottom:1px solid var(--border); display:flex; align-items:center; gap:16px; }
+  header h1 { margin:0; font-size:18px; }
+  nav { display:flex; gap:6px; margin-left:auto; flex-wrap:wrap; }
+  nav button { background:transparent; color:var(--muted); border:1px solid var(--border); padding:6px 12px; border-radius:6px; cursor:pointer; font-size:13px; }
+  nav button.active { background:var(--accent); color:white; border-color:var(--accent); }
+  main { padding:20px; max-width:1200px; margin:0 auto; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:16px; margin-bottom:16px; }
+  .row { display:flex; gap:12px; flex-wrap:wrap; }
+  .stat { flex:1; min-width:160px; background:var(--card); border:1px solid var(--border); border-radius:8px; padding:14px; }
+  .stat .label { color:var(--muted); font-size:12px; text-transform:uppercase; }
+  .stat .value { font-size:22px; font-weight:bold; margin-top:4px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th, td { padding:8px 10px; text-align:left; border-bottom:1px solid var(--border); }
+  th { color:var(--muted); font-weight:600; text-transform:uppercase; font-size:11px; }
+  input, select, textarea, button { font-family:inherit; font-size:13px; padding:6px 10px; border-radius:6px; border:1px solid var(--border); background:var(--bg); color:var(--text); }
+  button.primary { background:var(--accent); color:white; border-color:var(--accent); cursor:pointer; }
+  button.danger { background:var(--danger); color:white; border-color:var(--danger); cursor:pointer; }
+  .badge { padding:2px 8px; border-radius:4px; font-size:11px; }
+  .badge.open { background:rgba(38,166,154,0.2); color:var(--accent); }
+  .badge.closed { background:rgba(239,83,80,0.2); color:var(--danger); }
+  .schedule-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(220px, 1fr)); gap:12px; }
+  .slot { padding:10px; border-radius:6px; border:1px solid var(--border); }
+  .slot.avail { background:rgba(38,166,154,0.1); border-color:var(--accent); }
+  .slot.taken { background:rgba(239,83,80,0.1); border-color:var(--danger); opacity:0.7; }
+  .section { display:none; }
+  .section.active { display:block; }
+  .small { font-size:11px; color:var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>⚽ Futsal Dashboard</h1>
+  <nav>
+    <button data-tab="dashboard" class="active">Dashboard</button>
+    <button data-tab="schedule">Jadwal</button>
+    <button data-tab="bookings">Bookings</button>
+    <button data-tab="members">Members</button>
+    <button data-tab="kb">Knowledge</button>
+    <button data-tab="expenses">Expenses</button>
+    <button data-tab="audit">Audit</button>
+  </nav>
+</header>
+<main>
+  <section id="dashboard" class="section active">
+    <div class="row" id="stats-row"></div>
+    <div class="card">
+      <h3>📊 P&L (30 hari terakhir)</h3>
+      <div id="pl-summary"></div>
+    </div>
+  </section>
+
+  <section id="schedule" class="section">
+    <div class="card">
+      <div class="row" style="align-items:end">
+        <div><label class="small">Tanggal</label><br><input type="date" id="schedule-date"></div>
+        <button class="primary" onclick="loadSchedule()">Refresh</button>
+      </div>
+    </div>
+    <div id="schedule-content"></div>
+  </section>
+
+  <section id="bookings" class="section">
+    <div class="card">
+      <h3>➕ Booking Baru</h3>
+      <div class="row" style="align-items:end">
+        <div><label class="small">Lapangan</label><br><select id="b-field"></select></div>
+        <div><label class="small">Tanggal</label><br><input type="date" id="b-date"></div>
+        <div><label class="small">Jam</label><br><input id="b-time" placeholder="19.00"></div>
+        <div><label class="small">Nama Tim</label><br><input id="b-team"></div>
+        <div><label class="small">Nomor HP</label><br><input id="b-phone"></div>
+        <div><label class="small">Harga</label><br><input id="b-price" type="number"></div>
+        <button class="primary" onclick="createBooking()">Booking</button>
+      </div>
+    </div>
+    <div class="card">
+      <h3>📋 Bookings</h3>
+      <div class="row" style="margin-bottom:10px">
+        <input id="b-filter-date" type="date">
+        <select id="b-filter-status"><option value="">All</option><option value="confirmed">Active</option><option value="cancelled">Cancelled</option></select>
+        <button class="primary" onclick="loadBookings()">Filter</button>
+      </div>
+      <div id="bookings-table"></div>
+    </div>
+  </section>
+
+  <section id="members" class="section">
+    <div class="card">
+      <h3>👥 Top Members</h3>
+      <select id="m-sort" onchange="loadMembers()">
+        <option value="bookings_count">By Bookings</option>
+        <option value="total_spent_idr">By Spending</option>
+        <option value="last_booking_at">Latest Active</option>
+      </select>
+      <div id="members-table"></div>
+    </div>
+  </section>
+
+  <section id="kb" class="section">
+    <div class="card">
+      <h3>📚 Knowledge Base</h3>
+      <div class="row" style="align-items:end; margin-bottom:10px">
+        <div><label class="small">Kategori</label><br><input id="kb-cat" value="general"></div>
+        <div style="flex:1"><label class="small">Pertanyaan</label><br><input id="kb-q" style="width:100%"></div>
+      </div>
+      <div><label class="small">Jawaban</label><br><textarea id="kb-a" style="width:100%; height:60px"></textarea></div>
+      <button class="primary" style="margin-top:8px" onclick="addKB()">Tambah</button>
+      <hr style="margin:16px 0; border-color:var(--border)">
+      <input id="kb-search" placeholder="Search KB..." onkeyup="if(event.key==='Enter')searchKB()" style="width:100%">
+      <div id="kb-list" style="margin-top:12px"></div>
+    </div>
+  </section>
+
+  <section id="expenses" class="section">
+    <div class="card">
+      <h3>💸 Expense Baru</h3>
+      <div class="row" style="align-items:end">
+        <div><label class="small">Tanggal</label><br><input type="date" id="e-date"></div>
+        <div><label class="small">Kategori</label><br><input id="e-cat" placeholder="listrik/air/gaji"></div>
+        <div><label class="small">Jumlah</label><br><input id="e-amt" type="number"></div>
+        <div style="flex:1"><label class="small">Deskripsi</label><br><input id="e-desc"></div>
+        <button class="primary" onclick="addExpense()">Add</button>
+      </div>
+    </div>
+    <div class="card">
+      <h3>📋 Expenses</h3>
+      <div id="expenses-table"></div>
+    </div>
+  </section>
+
+  <section id="audit" class="section">
+    <div class="card">
+      <h3>📋 Audit Log</h3>
+      <div id="audit-table"></div>
+    </div>
+  </section>
+</main>
+
+<script>
+const fmtIdr = (n) => "Rp" + Math.round(n||0).toLocaleString("id-ID");
+
+async function api(p, opts={}) {
+  const r = await fetch("/api"+p, opts);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+document.querySelectorAll("nav button").forEach(b => {
+  b.onclick = () => {
+    document.querySelectorAll("nav button").forEach(x => x.classList.remove("active"));
+    document.querySelectorAll(".section").forEach(x => x.classList.remove("active"));
+    b.classList.add("active");
+    document.getElementById(b.dataset.tab).classList.add("active");
+    loadTab(b.dataset.tab);
+  };
+});
+
+function loadTab(tab) {
+  if (tab === "dashboard") loadDashboard();
+  if (tab === "schedule") loadSchedule();
+  if (tab === "bookings") { loadFields(); loadBookings(); }
+  if (tab === "members") loadMembers();
+  if (tab === "kb") loadKB();
+  if (tab === "expenses") loadExpenses();
+  if (tab === "audit") loadAudit();
+}
+
+async function loadDashboard() {
+  const h = await api("/health");
+  const today = new Date().toISOString().slice(0,10);
+  const monthAgo = new Date(Date.now()-30*86400000).toISOString().slice(0,10);
+  const pl = await api(`/profit-loss?from=${monthAgo}&to=${today}`);
+  document.getElementById("stats-row").innerHTML = `
+    <div class="stat"><div class="label">Total Bookings</div><div class="value">${h.bookings}</div></div>
+    <div class="stat"><div class="label">Members</div><div class="value">${h.members}</div></div>
+    <div class="stat"><div class="label">KB Entries</div><div class="value">${h.kb}</div></div>
+    <div class="stat"><div class="label">Revenue 30d</div><div class="value">${fmtIdr(pl.paid)}</div></div>
+    <div class="stat"><div class="label">Expenses 30d</div><div class="value">${fmtIdr(pl.expenses)}</div></div>
+    <div class="stat"><div class="label">Profit 30d</div><div class="value" style="color:${pl.profit>=0?'var(--accent)':'var(--danger)'}">${fmtIdr(pl.profit)}</div></div>
+  `;
+  document.getElementById("pl-summary").innerHTML = `
+    <table>
+      <tr><th>Metric</th><th>Amount</th></tr>
+      <tr><td>Revenue (booked)</td><td>${fmtIdr(pl.revenue)}</td></tr>
+      <tr><td>Paid (collected)</td><td>${fmtIdr(pl.paid)}</td></tr>
+      <tr><td>Outstanding</td><td>${fmtIdr(pl.revenue - pl.paid)}</td></tr>
+      <tr><td>Expenses</td><td>${fmtIdr(pl.expenses)}</td></tr>
+      <tr><td><b>Net Profit</b></td><td style="color:${pl.profit>=0?'var(--accent)':'var(--danger)'}"><b>${fmtIdr(pl.profit)}</b></td></tr>
+    </table>
+  `;
+}
+
+async function loadSchedule() {
+  const date = document.getElementById("schedule-date").value || new Date().toISOString().slice(0,10);
+  document.getElementById("schedule-date").value = date;
+  const r = await api(`/schedule?date=${date}`);
+  document.getElementById("schedule-content").innerHTML = r.schedule.map(f => `
+    <div class="card">
+      <h3>🏟️ ${f.field_name} <span class="small">(${f.field_code})</span></h3>
+      <div class="schedule-grid">
+        ${f.slots.map(s => `<div class="slot ${s.available?'avail':'taken'}">
+          <b>${s.slot}</b> ${s.available?'🟢':'🔴'}<br>
+          <span class="small">${fmtIdr(s.price)}${s.reason?' · '+s.reason:''}</span>
+        </div>`).join("")}
+      </div>
+    </div>
+  `).join("");
+}
+
+async function loadFields() {
+  const fields = await api("/fields");
+  const sel = document.getElementById("b-field");
+  sel.innerHTML = fields.map(f => `<option value="${f.code}">${f.name}</option>`).join("");
+}
+
+async function loadBookings() {
+  const date = document.getElementById("b-filter-date").value;
+  const status = document.getElementById("b-filter-status").value;
+  const qs = new URLSearchParams();
+  if (date) qs.set("date", date);
+  if (status) qs.set("status", status);
+  const list = await api("/bookings?" + qs);
+  document.getElementById("bookings-table").innerHTML = `<table><tr><th>ID</th><th>Date</th><th>Slot</th><th>Field</th><th>Team</th><th>Phone</th><th>Price</th><th>Paid</th><th>Status</th><th></th></tr>${list.map(b => `<tr><td>#${b.id}</td><td>${b.booking_date}</td><td>${b.time_slot}</td><td>${b.field_code}</td><td>${b.team_name}</td><td>${b.contact_phone||"-"}</td><td>${fmtIdr(b.price_idr)}</td><td>${fmtIdr(b.paid_idr)}</td><td><span class="badge ${b.status==='cancelled'?'closed':'open'}">${b.status}</span></td><td>${b.status!=='cancelled'?`<button class="danger" onclick="cancelBooking(${b.id})">Cancel</button>`:""}</td></tr>`).join("")}</table>`;
+}
+
+async function createBooking() {
+  try {
+    await api("/booking", { method: "POST", headers: {"content-type":"application/json"}, body: JSON.stringify({
+      field_code: document.getElementById("b-field").value,
+      date: document.getElementById("b-date").value,
+      time_slot: document.getElementById("b-time").value,
+      team_name: document.getElementById("b-team").value,
+      phone: document.getElementById("b-phone").value,
+      price_idr: parseFloat(document.getElementById("b-price").value || 0)
+    }) });
+    loadBookings();
+  } catch (err) { alert(err.message); }
+}
+
+async function cancelBooking(id) {
+  if (!confirm("Cancel booking #" + id + "?")) return;
+  await api(`/booking/${id}`, { method: "DELETE" });
+  loadBookings();
+}
+
+async function loadMembers() {
+  const sort = document.getElementById("m-sort").value;
+  const list = await api(`/members?sort=${sort}&limit=50`);
+  document.getElementById("members-table").innerHTML = `<table><tr><th>Name</th><th>Phone</th><th>Bookings</th><th>Cancels</th><th>Total Spent</th><th>Last</th></tr>${list.map(m => `<tr><td>${m.name||"?"} ${m.nickname?`<span class="small">(${m.nickname})</span>`:""}</td><td>${m.phone}</td><td>${m.bookings_count}</td><td>${m.cancel_count}</td><td>${fmtIdr(m.total_spent_idr)}</td><td class="small">${m.last_booking_at||"-"}</td></tr>`).join("")}</table>`;
+}
+
+async function loadKB() {
+  const list = await api("/kb?limit=100");
+  renderKB(list);
+}
+async function searchKB() {
+  const q = document.getElementById("kb-search").value.trim();
+  if (!q) return loadKB();
+  renderKB(await api("/kb?q=" + encodeURIComponent(q)));
+}
+function renderKB(list) {
+  document.getElementById("kb-list").innerHTML = list.map(k => `<div class="card"><b>[${k.category}] ${k.question}</b><br>${k.answer}<br><button class="danger" onclick="delKB(${k.id})">Hapus</button></div>`).join("");
+}
+async function addKB() {
+  await api("/kb", { method: "POST", headers: {"content-type":"application/json"}, body: JSON.stringify({
+    category: document.getElementById("kb-cat").value,
+    question: document.getElementById("kb-q").value,
+    answer: document.getElementById("kb-a").value
+  }) });
+  document.getElementById("kb-q").value = "";
+  document.getElementById("kb-a").value = "";
+  loadKB();
+}
+async function delKB(id) {
+  if (!confirm("Hapus #" + id + "?")) return;
+  await api("/kb/" + id, { method: "DELETE" });
+  loadKB();
+}
+
+async function loadExpenses() {
+  const list = await api("/expenses?limit=50");
+  document.getElementById("expenses-table").innerHTML = `<table><tr><th>Date</th><th>Category</th><th>Amount</th><th>Desc</th><th></th></tr>${list.map(e => `<tr><td>${e.date}</td><td>${e.category}</td><td>${fmtIdr(e.amount_idr)}</td><td>${e.description||""}</td><td><button class="danger" onclick="delExpense(${e.id})">×</button></td></tr>`).join("")}</table>`;
+}
+async function addExpense() {
+  await api("/expense", { method: "POST", headers: {"content-type":"application/json"}, body: JSON.stringify({
+    date: document.getElementById("e-date").value || new Date().toISOString().slice(0,10),
+    category: document.getElementById("e-cat").value,
+    amount_idr: parseFloat(document.getElementById("e-amt").value),
+    description: document.getElementById("e-desc").value
+  }) });
+  loadExpenses();
+}
+async function delExpense(id) {
+  if (!confirm("Hapus expense #" + id + "?")) return;
+  await api("/expense/" + id, { method: "DELETE" });
+  loadExpenses();
+}
+
+async function loadAudit() {
+  const list = await api("/audit?limit=200");
+  document.getElementById("audit-table").innerHTML = `<table><tr><th>Time</th><th>Action</th><th>Target</th><th>Detail</th></tr>${list.map(a => `<tr><td class="small">${a.created_at}</td><td>${a.action}</td><td>${a.target||""}</td><td>${a.detail||""}</td></tr>`).join("")}</table>`;
+}
+
+loadDashboard();
+</script>
+</body>
+</html>

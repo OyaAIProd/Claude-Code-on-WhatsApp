@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bot Admin Dashboard</title>
+<style>
+  :root { --bg:#0a0e1a; --card:#141a2e; --border:#2a3052; --text:#e8ecf5; --muted:#8a92a8; --accent:#26a69a; --danger:#ef5350; --warn:#ffa726; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:-apple-system,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--text); }
+  header { background:var(--card); padding:14px 20px; border-bottom:1px solid var(--border); display:flex; align-items:center; gap:16px; }
+  header h1 { margin:0; font-size:18px; }
+  nav { display:flex; gap:6px; margin-left:auto; flex-wrap:wrap; }
+  nav button { background:transparent; color:var(--muted); border:1px solid var(--border); padding:6px 12px; border-radius:6px; cursor:pointer; font-size:13px; }
+  nav button.active { background:var(--accent); color:white; border-color:var(--accent); }
+  main { padding:20px; max-width:1100px; margin:0 auto; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:16px; margin-bottom:16px; }
+  h2, h3 { margin-top:0; }
+  .row { display:flex; gap:12px; flex-wrap:wrap; align-items:end; }
+  .stat { flex:1; min-width:160px; background:var(--card); border:1px solid var(--border); border-radius:8px; padding:14px; }
+  .stat .label { color:var(--muted); font-size:11px; text-transform:uppercase; }
+  .stat .value { font-size:22px; font-weight:bold; margin-top:4px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th, td { padding:8px 10px; text-align:left; border-bottom:1px solid var(--border); }
+  th { color:var(--muted); font-weight:600; text-transform:uppercase; font-size:11px; }
+  input, select, textarea, button { font-family:inherit; font-size:13px; padding:6px 10px; border-radius:6px; border:1px solid var(--border); background:var(--bg); color:var(--text); }
+  button.primary { background:var(--accent); color:white; border-color:var(--accent); cursor:pointer; }
+  button.danger { background:var(--danger); color:white; border-color:var(--danger); cursor:pointer; }
+  button.warn { background:var(--warn); color:black; border-color:var(--warn); cursor:pointer; }
+  label { color:var(--muted); font-size:12px; display:block; margin-bottom:4px; }
+  .section { display:none; }
+  .section.active { display:block; }
+  .small { font-size:11px; color:var(--muted); }
+  code { background:var(--bg); padding:2px 6px; border-radius:4px; font-family:ui-monospace,monospace; }
+  .toast { position:fixed; bottom:20px; right:20px; background:var(--accent); color:white; padding:12px 18px; border-radius:8px; display:none; z-index:10; }
+  .toast.show { display:block; animation:slidein 0.3s; }
+  @keyframes slidein { from { transform:translateY(20px); opacity:0; } to { transform:translateY(0); opacity:1; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>⚙️ Bot Admin Dashboard</h1>
+  <nav>
+    <button data-tab="overview" class="active">Overview</button>
+    <button data-tab="bosses">Bosses</button>
+    <button data-tab="secret">Secret Code</button>
+    <button data-tab="budgets">Budgets</button>
+    <button data-tab="config">Config</button>
+    <button data-tab="audit">Audit</button>
+  </nav>
+</header>
+<main>
+  <section id="overview" class="section active">
+    <div class="row" id="stats-row"></div>
+    <div class="card">
+      <h3>Quick Actions</h3>
+      <button class="primary" onclick="loadAll()">Refresh stats</button>
+      <button class="warn" onclick="rotateSecret()">🔄 Rotate Secret Code</button>
+    </div>
+  </section>
+
+  <section id="bosses" class="section">
+    <div class="card">
+      <h3>➕ Tambah Boss</h3>
+      <div class="row">
+        <div><label>Nomor (628XXXXXXXXX)</label><input id="boss-num"></div>
+        <div><label>Nama (opsional)</label><input id="boss-name"></div>
+        <button class="primary" onclick="addBoss()">Tambah</button>
+      </div>
+      <p class="small">Format: kode negara + nomor, tanpa + atau spasi. Contoh: <code>628123456789</code></p>
+    </div>
+    <div class="card">
+      <h3>👑 Bosses Aktif</h3>
+      <div id="bosses-table"></div>
+    </div>
+  </section>
+
+  <section id="secret" class="section">
+    <div class="card">
+      <h3>🔑 Boss Secret Code</h3>
+      <p class="small">Kirim text ini ke bot via WhatsApp → otomatis promote sender jadi boss. Buat akses awal atau kalau lo lupa udah set boss berapa.</p>
+      <div class="row">
+        <div style="flex:1"><label>Current Code (masked)</label><input id="secret-current" disabled></div>
+        <button class="warn" onclick="rotateSecret()">🔄 Generate New</button>
+      </div>
+      <div id="new-secret-display" style="display:none; background:var(--bg); padding:12px; border:1px solid var(--accent); border-radius:6px; margin-top:10px; font-family:monospace; font-size:14px"></div>
+      <p class="small">⚠️ Setelah generate, restart bot supaya code baru aktif. Code lama otomatis invalid.</p>
+    </div>
+
+    <div class="card">
+      <h3>📝 Set Manual</h3>
+      <div class="row">
+        <div style="flex:1"><label>Custom Code</label><input id="secret-manual" placeholder="masukan kode rahasia custom"></div>
+        <button class="primary" onclick="setManualSecret()">Set</button>
+      </div>
+      <p class="small">Pakai code custom yang lo inget aja. Min 8 karakter, hindari karakter khusus.</p>
+    </div>
+  </section>
+
+  <section id="budgets" class="section">
+    <div class="card">
+      <h3>💰 Per-User Token Budget</h3>
+      <p class="small">Daily limit dalam USD. <code>0</code> = unlimited. Reset jam 00:00 otomatis.</p>
+      <div id="budgets-table"></div>
+    </div>
+  </section>
+
+  <section id="config" class="section">
+    <div class="card">
+      <h3>⚙️ Bot Configuration</h3>
+      <div id="config-form"></div>
+      <button class="primary" style="margin-top:10px" onclick="saveConfig()">💾 Save</button>
+      <p class="small">⚠️ Restart bot setelah save supaya berlaku.</p>
+    </div>
+  </section>
+
+  <section id="audit" class="section">
+    <div class="card">
+      <h3>📋 Audit Log (100 terakhir)</h3>
+      <div id="audit-table"></div>
+    </div>
+  </section>
+</main>
+
+<div class="toast" id="toast"></div>
+
+<script>
+function toast(msg) {
+  const t = document.getElementById("toast");
+  t.textContent = msg;
+  t.classList.add("show");
+  setTimeout(() => t.classList.remove("show"), 3000);
+}
+async function api(p, opts={}) {
+  const r = await fetch("/api"+p, opts);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+document.querySelectorAll("nav button").forEach(b => {
+  b.onclick = () => {
+    document.querySelectorAll("nav button").forEach(x => x.classList.remove("active"));
+    document.querySelectorAll(".section").forEach(x => x.classList.remove("active"));
+    b.classList.add("active");
+    document.getElementById(b.dataset.tab).classList.add("active");
+    loadTab(b.dataset.tab);
+  };
+});
+
+function loadTab(t) {
+  if (t === "overview") loadStats();
+  if (t === "bosses") loadBosses();
+  if (t === "secret") loadSecret();
+  if (t === "budgets") loadBudgets();
+  if (t === "config") loadConfig();
+  if (t === "audit") loadAudit();
+}
+
+async function loadStats() {
+  const s = await api("/stats");
+  document.getElementById("stats-row").innerHTML = `
+    <div class="stat"><div class="label">Messages</div><div class="value">${s.msgCount.toLocaleString()}</div></div>
+    <div class="stat"><div class="label">Chats Tracked</div><div class="value">${s.chatCount}</div></div>
+    <div class="stat"><div class="label">Group Profiles</div><div class="value">${s.profileCount}</div></div>
+    <div class="stat"><div class="label">Files Saved</div><div class="value">${s.fileCount}</div></div>
+    <div class="stat"><div class="label">Sessions</div><div class="value">${s.sessionCount}</div></div>
+    <div class="stat"><div class="label">Reminders</div><div class="value">${s.reminderCount}</div></div>
+    <div class="stat"><div class="label">Cron Tasks</div><div class="value">${s.cronCount}</div></div>
+    <div class="stat"><div class="label">Workflows</div><div class="value">${s.wfCount}</div></div>
+    <div class="stat"><div class="label">Uptime</div><div class="value">${s.uptime_h}h</div></div>
+    <div class="stat"><div class="label">RAM</div><div class="value">${s.mem_mb}MB</div></div>
+  `;
+}
+
+async function loadBosses() {
+  const list = await api("/bosses");
+  document.getElementById("bosses-table").innerHTML = list.length
+    ? `<table><tr><th>JID</th><th>Name</th><th>Added</th><th></th></tr>${list.map(b => `<tr><td><code>${b.jid}</code></td><td>${b.name||""}</td><td class="small">${b.added_at}</td><td><button class="danger" onclick="removeBoss('${b.jid.split('@')[0]}')">×</button></td></tr>`).join("")}</table>`
+    : "<p>📭 Belum ada boss. Tambahin di atas atau pakai Secret Code.</p>";
+}
+async function addBoss() {
+  const number = document.getElementById("boss-num").value.trim();
+  const name = document.getElementById("boss-name").value.trim();
+  if (!number) return toast("Nomor wajib");
+  try {
+    await api("/bosses", { method: "POST", headers: {"content-type":"application/json"}, body: JSON.stringify({ number, name }) });
+    document.getElementById("boss-num").value = "";
+    document.getElementById("boss-name").value = "";
+    toast("✅ Boss ditambah");
+    loadBosses();
+  } catch(e) { toast("❌ " + e.message); }
+}
+async function removeBoss(num) {
+  if (!confirm("Hapus boss " + num + "?")) return;
+  await api("/bosses/" + encodeURIComponent(num), { method: "DELETE" });
+  toast("🗑️ Boss dihapus");
+  loadBosses();
+}
+
+async function loadSecret() {
+  const cfg = await api("/config");
+  document.getElementById("secret-current").value = cfg.BOSS_SECRET_CODE;
+}
+async function rotateSecret() {
+  if (!confirm("Generate kode baru? Kode lama langsung invalid.")) return;
+  const r = await api("/secret-code/generate", { method: "POST" });
+  document.getElementById("new-secret-display").style.display = "block";
+  document.getElementById("new-secret-display").innerHTML = `🔑 New Code: <b>${r.code}</b><br><br><small>Catat sekarang juga! Kode ini cuma muncul sekali. Restart bot untuk apply.</small>`;
+  toast("✅ New code generated");
+  loadSecret();
+}
+async function setManualSecret() {
+  const code = document.getElementById("secret-manual").value.trim();
+  if (!code || code.length < 4) return toast("Min 4 karakter");
+  await api("/config", { method: "POST", headers: {"content-type":"application/json"}, body: JSON.stringify({ BOSS_SECRET_CODE: code }) });
+  document.getElementById("secret-manual").value = "";
+  toast("✅ Code di-set. Restart bot.");
+  loadSecret();
+}
+
+async function loadBudgets() {
+  const list = await api("/budgets");
+  document.getElementById("budgets-table").innerHTML = list.length
+    ? `<table><tr><th>User</th><th>Today</th><th>Daily Limit</th><th>Total</th><th>Requests</th><th></th></tr>${list.map(b => `<tr><td><code>${b.user_jid.split('@')[0]}</code></td><td>$${b.used_usd_today.toFixed(4)}</td><td><input id="b-${b.user_jid}" value="${b.daily_limit_usd}" style="width:80px" type="number" step="0.1"></td><td>$${b.used_usd_total.toFixed(2)}</td><td>${b.total_requests}</td><td><button class="primary" onclick="saveBudget('${b.user_jid}')">Save</button></td></tr>`).join("")}</table>`
+    : "<p>📭 Belum ada user tracked.</p>";
+}
+async function saveBudget(jid) {
+  const limit = parseFloat(document.getElementById("b-" + jid).value);
+  await api("/budgets/" + encodeURIComponent(jid), { method: "PUT", headers: {"content-type":"application/json"}, body: JSON.stringify({ daily_limit_usd: limit }) });
+  toast("✅ Budget updated");
+}
+
+async function loadConfig() {
+  const cfg = await api("/config");
+  const fields = ["WA_INITIAL_BOSSES","CLAUDE_MODEL","CLAUDE_PERMISSION_MODE","CLAUDE_TIMEOUT_MS","GROQ_WHISPER_MODEL","EMBEDDINGS_ENABLED","LOG_LEVEL"];
+  document.getElementById("config-form").innerHTML = fields.map(f => `<div style="margin-bottom:10px"><label>${f}</label><input id="cfg-${f}" value="${cfg[f]||""}" style="width:100%"></div>`).join("") +
+    `<div style="margin-bottom:10px"><label>GROQ_API_KEY (status: ${cfg.GROQ_API_KEY})</label><input id="cfg-GROQ_API_KEY" placeholder="kosongkan untuk gak ubah" style="width:100%"></div>` +
+    `<div style="margin-bottom:10px"><label>Admin Dashboard Password (current login)</label><input type="password" id="cfg-ADMIN_PASS" placeholder="kosongkan untuk gak ubah" style="width:100%"></div>`;
+}
+async function saveConfig() {
+  const fields = ["WA_INITIAL_BOSSES","CLAUDE_MODEL","CLAUDE_PERMISSION_MODE","CLAUDE_TIMEOUT_MS","GROQ_WHISPER_MODEL","EMBEDDINGS_ENABLED","LOG_LEVEL","GROQ_API_KEY","ADMIN_PASS"];
+  const body = {};
+  for (const f of fields) {
+    const v = document.getElementById("cfg-"+f).value;
+    if (v && v !== "***" && !v.startsWith("✓")) body[f] = v;
+  }
+  await api("/config", { method: "POST", headers: {"content-type":"application/json"}, body: JSON.stringify(body) });
+  toast("✅ Saved. Restart bot.");
+}
+
+async function loadAudit() {
+  const list = await api("/audit?limit=100");
+  document.getElementById("audit-table").innerHTML = `<table><tr><th>Time</th><th>Action</th><th>Target</th><th>Detail</th></tr>${list.map(a => `<tr><td class="small">${a.created_at}</td><td>${a.action}</td><td>${a.target||""}</td><td class="small">${a.detail||""}</td></tr>`).join("")}</table>`;
+}
+
+function loadAll() { loadStats(); loadBosses(); loadSecret(); }
+loadAll();
+</script>
+</body>
+</html>

@@ -1,0 +1,17 @@
+{
+  "name": "futsal-mcp",
+  "version": "1.0.0",
+  "description": "Futsal MCP Server + Dashboard - Termux ready",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dashboard": "node dashboard/server.js",
+    "all": "node dashboard/server.js & node src/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "better-sqlite3": "^12.10.0",
+    "zod": "^3.23.8",
+    "express": "^4.21.0"
+  }
+}

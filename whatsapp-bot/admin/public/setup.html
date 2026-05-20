@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Setup Wizard — Claude Code Personal OS</title>
+<style>
+  :root { --bg:#0a0e1a; --card:#141a2e; --border:#2a3052; --text:#e8ecf5; --muted:#8a92a8; --accent:#26a69a; --danger:#ef5350; --warn:#ffa726; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:-apple-system,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--text); min-height:100vh; display:flex; align-items:center; justify-content:center; padding:20px; }
+  .wizard { max-width:600px; width:100%; background:var(--card); border:1px solid var(--border); border-radius:16px; padding:32px; box-shadow:0 20px 60px rgba(0,0,0,0.5); }
+  h1 { margin:0 0 8px 0; font-size:24px; }
+  .subtitle { color:var(--muted); margin-bottom:24px; font-size:14px; }
+  .progress { display:flex; gap:6px; margin-bottom:28px; }
+  .step-dot { flex:1; height:6px; background:var(--border); border-radius:3px; transition:0.3s; }
+  .step-dot.done { background:var(--accent); }
+  .step-dot.current { background:var(--accent); box-shadow:0 0 0 3px rgba(38,166,154,0.3); }
+  .step { display:none; animation:fadein 0.4s; }
+  .step.active { display:block; }
+  @keyframes fadein { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:translateY(0); } }
+  .step h2 { margin:0 0 8px 0; font-size:20px; color:var(--accent); }
+  .step .hint { color:var(--muted); font-size:13px; margin-bottom:16px; line-height:1.5; }
+  label { display:block; font-size:12px; color:var(--muted); margin-bottom:6px; margin-top:14px; text-transform:uppercase; }
+  input { width:100%; font-family:inherit; font-size:15px; padding:12px 14px; border-radius:8px; border:1px solid var(--border); background:var(--bg); color:var(--text); transition:0.2s; }
+  input:focus { outline:none; border-color:var(--accent); box-shadow:0 0 0 3px rgba(38,166,154,0.2); }
+  .tip { background:rgba(255,167,38,0.1); border-left:3px solid var(--warn); padding:10px 14px; border-radius:6px; margin-top:12px; font-size:13px; color:#ffd980; }
+  .nav { display:flex; gap:12px; margin-top:28px; }
+  button { font-family:inherit; font-size:14px; padding:12px 20px; border-radius:8px; border:1px solid var(--border); background:var(--bg); color:var(--text); cursor:pointer; transition:0.2s; flex:1; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:white; font-weight:600; }
+  button.primary:hover { background:#1d8c80; }
+  button:hover { border-color:var(--accent); }
+  button.ghost { background:transparent; }
+  .ok-screen { text-align:center; padding:20px 0; }
+  .ok-icon { font-size:64px; margin-bottom:16px; }
+  .secret-box { background:var(--bg); border:2px dashed var(--accent); padding:14px; border-radius:8px; font-family:ui-monospace,monospace; font-size:16px; margin:14px 0; word-break:break-all; }
+  a { color:var(--accent); }
+  .skip { color:var(--muted); font-size:13px; text-align:center; margin-top:10px; }
+  .skip a { cursor:pointer; }
+</style>
+</head>
+<body>
+<div class="wizard">
+  <h1>🤖 Setup Wizard</h1>
+  <div class="subtitle">5 langkah singkat untuk siapin bot — ~3 menit</div>
+
+  <div class="progress">
+    <div class="step-dot current" data-i="1"></div>
+    <div class="step-dot" data-i="2"></div>
+    <div class="step-dot" data-i="3"></div>
+    <div class="step-dot" data-i="4"></div>
+    <div class="step-dot" data-i="5"></div>
+  </div>
+
+  <div class="step active" data-step="1">
+    <h2>🔐 Step 1/5 — Password Admin Dashboard</h2>
+    <div class="hint">Pakai password ini untuk login ke dashboard nanti. Pilih yang gampang lo inget tapi susah ditebak orang lain.</div>
+    <label>Password Admin (min 4 karakter)</label>
+    <input type="password" id="admin_password" placeholder="contoh: ganti2026">
+    <label>Konfirmasi Password</label>
+    <input type="password" id="admin_password_confirm" placeholder="ulangi password di atas">
+  </div>
+
+  <div class="step" data-step="2">
+    <h2>📱 Step 2/5 — Nomor WhatsApp Boss</h2>
+    <div class="hint">Nomor lo sendiri yang nanti ngontrol bot via WA. Format: kode negara + nomor, tanpa + atau spasi.</div>
+    <label>Nomor WhatsApp Lo</label>
+    <input id="boss_number" placeholder="628123456789">
+    <label>Nama Lo (opsional)</label>
+    <input id="boss_name" placeholder="contoh: Budi">
+    <div class="tip">💡 Contoh: kalau nomor lo +62 812 3456 7890 → tulis <b>628123456789</b></div>
+  </div>
+
+  <div class="step" data-step="3">
+    <h2>🔑 Step 3/5 — Kode Rahasia Boss</h2>
+    <div class="hint">Kode rahasia ini bisa dipakai dari nomor WA mana aja untuk auto-promote jadi boss. Berguna buat backup akses kalau lo lupa setup nomor lain. Kosongkan untuk auto-generate.</div>
+    <label>Kode Rahasia</label>
+    <input id="boss_secret_code" placeholder="(kosong = auto-generate 12 karakter random)">
+    <div class="tip">💡 Code ini SANGAT rahasia. Jangan share ke orang lain. Bisa di-rotate kapan aja di dashboard.</div>
+  </div>
+
+  <div class="step" data-step="4">
+    <h2>🎤 Step 4/5 — Groq API Key (untuk Voice + Vision)</h2>
+    <div class="hint">Optional tapi recommended. Tanpa ini, voice note + image description gak jalan.</div>
+    <div class="tip">📝 Cara dapat free: <a href="https://console.groq.com" target="_blank">console.groq.com</a> → Sign Up → API Keys → Create. Free tier cukup buat personal.</div>
+    <label>Groq API Key</label>
+    <input id="groq_api_key" placeholder="gsk_... (skip kalau gak punya)">
+    <div class="skip"><a onclick="next()">Skip — lewati Groq</a></div>
+  </div>
+
+  <div class="step" data-step="5">
+    <h2>💬 Step 5/5 — Telegram Bot (Opsional)</h2>
+    <div class="hint">Kalau lo mau juga akses Claude via Telegram (selain WhatsApp). Skip kalau gak butuh.</div>
+    <div class="tip">📝 Cara dapat token: Chat <a href="https://t.me/botfather" target="_blank">@BotFather</a> di Telegram → /newbot → ikutin instruksi → copy token.</div>
+    <label>Telegram Bot Token</label>
+    <input id="telegram_token" placeholder="123456:ABC-DEF... (skip kalau gak butuh)">
+    <label>Telegram Chat ID Lo (opsional, biar cuma lo yang bisa)</label>
+    <input id="telegram_chat_id" placeholder="kosong = siapa aja boleh chat">
+    <div class="skip"><a onclick="next()">Skip — lewati Telegram</a></div>
+  </div>
+
+  <div class="step" data-step="6">
+    <div class="ok-screen">
+      <div class="ok-icon">🎉</div>
+      <h2>Setup Complete!</h2>
+      <div class="hint" style="margin-top:16px">Config tersimpan. Restart bot untuk apply.</div>
+      <div id="generated-secret-display" style="display:none">
+        <div class="hint" style="margin-top:20px">Kode Rahasia Boss lo (CATAT INI):</div>
+        <div class="secret-box" id="generated-secret"></div>
+        <div class="hint" style="font-size:12px">⚠️ Code cuma muncul sekali. Lo bisa rotate nanti di dashboard.</div>
+      </div>
+      <div class="hint" style="margin-top:24px">Langkah selanjutnya:</div>
+      <ol style="text-align:left; color:var(--muted); line-height:1.8; font-size:13px">
+        <li>Tutup tab ini</li>
+        <li>Restart bot (Ctrl+C di terminal, lalu <code>npm start</code> lagi)</li>
+        <li>Scan QR code WhatsApp yang muncul di terminal</li>
+        <li>Buka <a href="/">dashboard</a> dengan login lo</li>
+      </ol>
+      <button class="primary" onclick="window.location='/'" style="margin-top:20px">Buka Dashboard →</button>
+    </div>
+  </div>
+
+  <div class="nav" id="nav">
+    <button class="ghost" onclick="prev()" id="prev-btn" disabled>← Kembali</button>
+    <button class="primary" onclick="next()" id="next-btn">Lanjut →</button>
+  </div>
+</div>
+
+<script>
+let step = 1;
+const TOTAL = 5;
+
+function show(i) {
+  document.querySelectorAll(".step").forEach(s => s.classList.remove("active"));
+  document.querySelector(`.step[data-step="${i}"]`).classList.add("active");
+  document.querySelectorAll(".step-dot").forEach(d => {
+    const di = parseInt(d.dataset.i);
+    d.classList.remove("current", "done");
+    if (di < i) d.classList.add("done");
+    if (di === i) d.classList.add("current");
+  });
+  document.getElementById("prev-btn").disabled = (i === 1 || i > TOTAL);
+  document.getElementById("next-btn").textContent = (i === TOTAL) ? "✅ Selesai" : "Lanjut →";
+  document.getElementById("nav").style.display = (i > TOTAL) ? "none" : "flex";
+}
+
+function prev() { if (step > 1) { step--; show(step); } }
+
+async function next() {
+  if (step === 1) {
+    const p = document.getElementById("admin_password").value;
+    const c = document.getElementById("admin_password_confirm").value;
+    if (!p || p.length < 4) return alert("Password min 4 karakter");
+    if (p !== c) return alert("Password gak match");
+  }
+  if (step === 2) {
+    const n = document.getElementById("boss_number").value.replace(/\D/g, "");
+    if (!n || n.length < 8) return alert("Nomor WhatsApp gak valid. Contoh: 628123456789");
+    document.getElementById("boss_number").value = n;
+  }
+  if (step < TOTAL) {
+    step++;
+    show(step);
+    return;
+  }
+  // submit
+  const body = {
+    admin_password: document.getElementById("admin_password").value,
+    boss_number: document.getElementById("boss_number").value,
+    boss_name: document.getElementById("boss_name").value,
+    boss_secret_code: document.getElementById("boss_secret_code").value,
+    groq_api_key: document.getElementById("groq_api_key").value,
+    telegram_token: document.getElementById("telegram_token").value,
+    telegram_chat_id: document.getElementById("telegram_chat_id").value,
+    claude_model: "sonnet"
+  };
+  try {
+    const r = await fetch("/setup", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    if (!r.ok) { const t = await r.text(); throw new Error(t); }
+    const j = await r.json();
+    step = TOTAL + 1;
+    show(step);
+    if (j.secret_code && !body.boss_secret_code) {
+      document.getElementById("generated-secret-display").style.display = "block";
+      document.getElementById("generated-secret").textContent = j.secret_code;
+    }
+  } catch (e) {
+    alert("Error: " + e.message);
+  }
+}
+
+show(1);
+</script>
+</body>
+</html>
