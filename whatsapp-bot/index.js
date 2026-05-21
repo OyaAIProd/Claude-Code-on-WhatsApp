@@ -1,4 +1,7 @@
 require("dotenv").config({ path: require("path").join(__dirname, ".env") });
+// Preload onnxruntime-node BEFORE @xenova/transformers (embeddings) binds its own ONNX runtime.
+// If xenova loads first, the TTS native addon fails with "the operating system cannot run %1".
+try { require("onnxruntime-node"); } catch (e) { console.warn("[init] onnxruntime-node preload:", e.message); }
 const path = require("path");
 const fs = require("fs");
 const qrcode = require("qrcode-terminal");
