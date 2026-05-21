@@ -2,8 +2,43 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const crypto = require("crypto");
-const { spawn } = require("child_process");
+const { spawn, spawnSync } = require("child_process");
 const { pathToFileURL } = require("url");
+
+// Resolve a runnable ffmpeg once. Order: FFMPEG_PATH env -> "ffmpeg" on PATH -> WinGet install.
+// (WinGet's ffmpeg can be an app-execution-alias stub that throws "cannot run %1" when spawned.)
+let _ffmpegBin;
+function findWinGetFfmpeg() {
+  try {
+    const root = path.join(process.env.LOCALAPPDATA || "", "Microsoft", "WinGet", "Packages");
+    if (!fs.existsSync(root)) return null;
+    for (const dir of fs.readdirSync(root)) {
+      if (!/ffmpeg/i.test(dir)) continue;
+      const stack = [path.join(root, dir)];
+      while (stack.length) {
+        const cur = stack.pop();
+        let entries = [];
+        try { entries = fs.readdirSync(cur, { withFileTypes: true }); } catch { continue; }
+        for (const e of entries) {
+          const full = path.join(cur, e.name);
+          if (e.isDirectory()) stack.push(full);
+          else if (/^ffmpeg\.exe$/i.test(e.name)) return full;
+        }
+      }
+    }
+  } catch {}
+  return null;
+}
+function ffmpegBin() {
+  if (_ffmpegBin !== undefined) return _ffmpegBin;
+  const candidates = [process.env.FFMPEG_PATH, "ffmpeg", findWinGetFfmpeg()].filter(Boolean);
+  for (const c of candidates) {
+    try { if (spawnSync(c, ["-version"], { stdio: "ignore" }).status === 0) { _ffmpegBin = c; console.log(`[TTS] ffmpeg: ${c}`); return c; } } catch {}
+  }
+  _ffmpegBin = null;
+  console.warn("[TTS] ffmpeg gak ketemu — voice note dikirim WAV (set FFMPEG_PATH untuk opus).");
+  return null;
+}
 
 // Supertonic-3 on-device TTS (ONNX). Self-contained in tts/supertonic/ for easy export/move.
 const TTS_DIR = path.join(__dirname, "tts", "supertonic");
@@ -66,12 +101,19 @@ function cleanForSpeech(text) {
 
 function toOpus(wavPath) {
   return new Promise((resolve) => {
+    const bin = ffmpegBin();
+    if (!bin) return resolve(null);
     const out = wavPath.replace(/\.wav$/, ".ogg");
     let done = false;
     const fin = (v) => { if (!done) { done = true; resolve(v); } };
-    const p = spawn("ffmpeg", ["-y", "-i", wavPath, "-c:a", "libopus", "-b:a", "32k", "-ar", "48000", "-ac", "1", out], { stdio: "ignore" });
-    p.on("close", code => fin(code === 0 && fs.existsSync(out) ? out : null));
-    p.on("error", () => fin(null));
+    try {
+      const p = spawn(bin, ["-y", "-i", wavPath, "-c:a", "libopus", "-b:a", "32k", "-ar", "48000", "-ac", "1", out], { stdio: "ignore", shell: false });
+      p.on("close", code => fin(code === 0 && fs.existsSync(out) ? out : null));
+      p.on("error", (e) => { console.warn("[TTS] ffmpeg run fail (kirim WAV):", e.code || e.message); fin(null); });
+    } catch (e) {
+      console.warn("[TTS] ffmpeg spawn fail (kirim WAV):", e.message);
+      fin(null);
+    }
   });
 }
 

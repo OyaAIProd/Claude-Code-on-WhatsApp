@@ -272,6 +272,10 @@ Section "🗂️ KNOWN GROUPS/CHATS" kasih lo daftar group + topik tiap group �
 
 Format WA: *bold* _italic_ ~strike~ \`code\` (single delimiter, bukan markdown ##). Tabel/data berbox-drawing/aligned-column WAJIB wrap di \`\`\`code block\`\`\` atau convert ke bullet list "• Kolom: nilai" — WA pakai proportional font, alignment spasi pecah.`;
 
+// Tiny prompt for trivial messages (greetings/chit-chat) — avoids burning tokens on the
+// full instruction block + tools when the user just says "halo".
+const SHORT_SYSTEM = `Lo asisten Claude Code di WhatsApp. Ngomong casual Jakarta (gw/lo). Ini obrolan ringan — jawab SINGKAT & langsung, JANGAN panggil tool apa pun, JANGAN search, JANGAN analisa. Maks 1-2 kalimat. Boleh emoji secukupnya. Format WA: *bold* _italic_.`;
+
 const SAFE_MODE_APPEND = `
 
 🔒 SAFE MODE AKTIF. Sebelum panggil tool yang ubah state (Bash, Edit, Write, NotebookEdit, mcp__* tool dengan nama 'buy/sell/create/update/delete/place/start/stop/cancel/reset/set_/follow/run_'), LO HARUS:
@@ -313,10 +317,12 @@ function classifyComplexity(userText) {
 }
 
 // Resolve model: explicit (haiku/sonnet/opus) = manual; null/"auto" = auto-route haiku|sonnet.
+// `simple` is computed ALWAYS (even in manual mode) so trivial chat never triggers heavy
+// search / huge prompts regardless of the chosen model — keeps cost down.
 function resolveModel(cfg, userText) {
-  const stored = cfg && cfg.model;
-  if (stored && stored !== "auto") return { model: stored, simple: false, auto: false };
   const simple = classifyComplexity(userText);
+  const stored = cfg && cfg.model;
+  if (stored && stored !== "auto") return { model: stored, simple, auto: false };
   return { model: simple ? "haiku" : "sonnet", simple, auto: true };
 }
 
@@ -471,9 +477,10 @@ async function streamMessage(userText, chatId, contextMessages = [], isGroup = f
   }
 
   const uiLang = i18n.getLang(chatId);
-  const baseSystem = isGroup ? APPEND_SYSTEM_GROUP : APPEND_SYSTEM_DM;
+  const baseSystem = simple ? SHORT_SYSTEM : (isGroup ? APPEND_SYSTEM_GROUP : APPEND_SYSTEM_DM);
+  const ctxMsgs = simple ? contextMessages.slice(-8) : contextMessages;   // trivial msgs need little context
   const langHeader = uiLang === "en" ? `\n\n🌐 OUTPUT LANGUAGE: Reply primarily in ENGLISH (user changed UI to en). Override Indonesian persona to English casual.\n` : "";
-  let systemPrompt = baseSystem + langHeader + buildContext(contextMessages, isGroup);
+  let systemPrompt = baseSystem + langHeader + buildContext(ctxMsgs, isGroup);
 
   if (cfg?.preferred_lang) {
     const langName = translateMod.LANG_NAMES[cfg.preferred_lang] || cfg.preferred_lang;
@@ -491,9 +498,11 @@ async function streamMessage(userText, chatId, contextMessages = [], isGroup = f
     if (profCtx) systemPrompt += profCtx;
   }
 
-  const personaInfo = persona.buildPersonaPrompt(chatId, contextMessages);
-  systemPrompt += personaInfo.prompt;
-  onEvent({ type: "tool_use", name: "persona", input: {}, label: `🎭 persona: ${personaInfo.effective}` });
+  if (!simple) {
+    const personaInfo = persona.buildPersonaPrompt(chatId, contextMessages);
+    systemPrompt += personaInfo.prompt;
+    onEvent({ type: "tool_use", name: "persona", input: {}, label: `🎭 persona: ${personaInfo.effective}` });
+  }
 
   if (!simple) {
     try {
@@ -502,13 +511,15 @@ async function streamMessage(userText, chatId, contextMessages = [], isGroup = f
     } catch {}
   }
 
-  try {
-    const remembered = buttonsMod.listRemembered(chatId);
-    if (remembered.length) {
-      const lines = remembered.slice(0, 10).map(r => `• "${r.pattern}" → ${r.decision}`);
-      systemPrompt += `\n\n🧠 USER PREFERENCES (decisions remembered, JANGAN tanya lagi):\n${lines.join("\n")}\n`;
-    }
-  } catch {}
+  if (!simple) {
+    try {
+      const remembered = buttonsMod.listRemembered(chatId);
+      if (remembered.length) {
+        const lines = remembered.slice(0, 10).map(r => `• "${r.pattern}" → ${r.decision}`);
+        systemPrompt += `\n\n🧠 USER PREFERENCES (decisions remembered, JANGAN tanya lagi):\n${lines.join("\n")}\n`;
+      }
+    } catch {}
+  }
 
   // Image recall: only fire when query both mentions an image AND has recall/question intent.
   // Keeps token cost low — inject max 3 ranked matches, short descriptions only.
