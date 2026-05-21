@@ -75,3 +75,8 @@ coverage/
 *.tmp
 .cache/
 .claude/
+
+# Supertonic TTS model assets (download via tts/supertonic/download-model.mjs)
+whatsapp-bot/tts/supertonic/assets/
+*.onnx
+*.wav

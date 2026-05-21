@@ -38,6 +38,7 @@ const vision = require("./vision");
 const entities = require("./entities");
 const learning = require("./learning");
 const skills = require("./skills_mod");
+const tts = require("./tts");
 const persona = require("./persona");
 const plugins = require("./plugins");
 const workflows = require("./workflows");
@@ -66,23 +67,23 @@ function getChatState(chatId) {
   return s;
 }
 
-async function enqueueOrRun(chatId, userText, msg, isGroup, senderJid = null) {
+async function enqueueOrRun(chatId, userText, msg, isGroup, senderJid = null, opts = {}) {
   const state = getChatState(chatId);
   if (state.busy) {
-    state.queue.push({ userText, msg, isGroup, senderJid, senderName: msg?.pushName || "user" });
+    state.queue.push({ userText, msg, isGroup, senderJid, senderName: msg?.pushName || "user", opts });
     console.log(`[QUEUE] chat=${chatId} queued (total ${state.queue.length})`);
     return;
   }
   state.busy = true;
   try {
-    await processUserMessage(chatId, userText, msg, isGroup, senderJid);
+    await processUserMessage(chatId, userText, msg, isGroup, senderJid, opts);
     while (state.queue.length > 0) {
       const batch = state.queue.splice(0);
       const combined = batch.length === 1
         ? batch[0].userText
         : `(Sambil lo proses pesan sebelumnya, user kirim ${batch.length} pesan tambahan:)\n${batch.map((b, i) => `${i + 1}. [${b.senderName}] ${b.userText}`).join("\n")}\n\nProcess semua di atas berurutan, atau gabungin jadi satu jawaban kalau berkaitan.`;
       const firstMsg = batch[0].msg;
-      await processUserMessage(chatId, combined, firstMsg, isGroup, batch[0].senderJid);
+      await processUserMessage(chatId, combined, firstMsg, isGroup, batch[0].senderJid, batch[0].opts || {});
     }
   } finally {
     state.busy = false;
@@ -202,6 +203,22 @@ async function sendDocument(chatId, filePath, fileName, caption, quotedMsg) {
   }
 }
 
+async function sendVoice(chatId, audioPath, isOpus, quotedMsg) {
+  try {
+    const buf = fs.readFileSync(audioPath);
+    return await sock.sendMessage(chatId, {
+      audio: buf,
+      ptt: isOpus,                         // voice-note bubble only works with ogg/opus
+      mimetype: isOpus ? "audio/ogg; codecs=opus" : "audio/mp4"
+    }, quotedMsg ? { quoted: quotedMsg } : {});
+  } catch (err) {
+    console.error("sendVoice:", err.message);
+    return null;
+  } finally {
+    try { fs.unlinkSync(audioPath); } catch {}
+  }
+}
+
 function extractAttachMarkers(text) {
   if (!text) return { cleaned: text, files: [] };
   const files = [];
@@ -306,7 +323,7 @@ const BOT_LOCAL_COMMANDS = new Set([
   "/pilih", "/pick", "/remembered", "/forget",
   "/event", "/events", "/ics", "/cal",
   "/ui-lang", "/uilang", "/version", "/update-check",
-  "/lessons", "/lesson-del", "/skills", "/skill", "/skill-del"
+  "/lessons", "/lesson-del", "/skills", "/skill", "/skill-del", "/voice"
 ]);
 
 async function handleCommand(chatId, senderJid, text, isGroup, msg) {
@@ -330,11 +347,12 @@ async function handleCommand(chatId, senderJid, text, isGroup, msg) {
         auto: `⏰ *OTOMASI (boss)*\n/remind <waktu> <pesan> — reminder\n/reminders — list reminder\n/cron — jadwal berulang\n/event • /events • /ics • /cal — kalender\n/wf • /workflow • /workflows — mini-workflow\n/plugins • /plugin-reload — plugin`,
         admin: `👑 *ADMIN (boss)*\n/boss-add <nomor> • /boss-remove • /list-bosses\n/list-chats — semua chat\n/dm-on|off — bot balas DM\n/listen-on|off — bot dengar group ini\n/users • /userprofile — profil user\n/persona — ganti gaya bot\n/version • /update-check — cek update`,
         button: `🔘 *PILIHAN & PREFERENSI*\n/pilih <n> atau /pick <n> — pilih opsi tombol\n/remembered — preferensi tersimpan\n/forget <pattern> — hapus preferensi`,
-        learn: `🧠 *BELAJAR & SKILL*\nBot belajar otomatis dari koreksi lo (mis "lain kali cari data X di Y") + bikin skill buat tugas berulang.\n/lessons — pelajaran tersimpan\n/lesson-del <id> — hapus pelajaran (boss)\n/skills — daftar skill\n/skill <nama> — detail skill\n/skill-del <nama> — hapus skill (boss)`
+        learn: `🧠 *BELAJAR & SKILL*\nBot belajar otomatis dari koreksi lo (mis "lain kali cari data X di Y") + bikin skill buat tugas berulang.\n/lessons — pelajaran tersimpan\n/lesson-del <id> — hapus pelajaran (boss)\n/skills — daftar skill\n/skill <nama> — detail skill\n/skill-del <nama> — hapus skill (boss)`,
+        voice: `🔊 *VOICE / TTS*\nBot bisa bales pakai voice note (suara natural Supertonic).\n/voice on — semua balasan + voice note (tetap ada teks)\n/voice off — teks aja\n_Kirim voice → bot auto-bales voice juga (mirror), walau mode off._\nSetup model sekali: \`node tts/supertonic/download-model.mjs\``
       };
       const t = HELP_TOPICS[topic];
       if (t) return sendText(chatId, t, msg);
-      return sendText(chatId, `❓ Topik "${topic}" gak ada.\nTopik: session, setup, rag, file, lang, budget, auto, admin, button, learn`, msg);
+      return sendText(chatId, `❓ Topik "${topic}" gak ada.\nTopik: session, setup, rag, file, lang, budget, auto, admin, button, learn, voice`, msg);
     }
     return sendText(chatId,
       `🤖 *Claude Code di WhatsApp*\n\n` +
@@ -352,6 +370,7 @@ async function handleCommand(chatId, senderJid, text, isGroup, msg) {
       `• \`/help admin\` — boss, persona, listen\n` +
       `• \`/help button\` — pilihan & preferensi\n` +
       `• \`/help learn\` — belajar dari koreksi + skills\n` +
+      `• \`/help voice\` — voice note / TTS\n` +
       `━━━━━━━━━━━━━━\n` +
       `*Sering dipakai:*\n` +
       `/search <kata> • /summarize • /recent • /files\n` +
@@ -1028,10 +1047,22 @@ async function handleCommand(chatId, senderJid, text, isGroup, msg) {
     return sendText(chatId, skills.deleteSkill(argText) ? `🗑️ Skill "${argText}" dihapus.` : `❌ "${argText}" gak ada.`, msg);
   }
 
+  if (cmd === "/voice") {
+    const arg = argText.toLowerCase();
+    const ready = tts.isAvailable();
+    if (arg !== "on" && arg !== "off") {
+      const cur = getChatConfig(chatId).voice_mode ? "ON" : "OFF";
+      return sendText(chatId, `🔊 Voice mode: *${cur}*${ready ? "" : "\n⚠️ Model TTS belum di-download (jalankan: node tts/supertonic/download-model.mjs)"}\n\n/voice on — semua balasan + voice note\n/voice off — teks aja\n_Voice note auto-aktif kalau lo kirim voice (walau mode off)._`, msg);
+    }
+    if (!boss) return sendText(chatId, "❌ Boss only.", msg);
+    setChatConfig(chatId, { voice_mode: arg === "on" ? 1 : 0 });
+    return sendText(chatId, `✅ Voice → *${arg.toUpperCase()}*${arg === "on" && !ready ? "\n⚠️ Model TTS belum di-download." : ""}`, msg);
+  }
+
   return false;
 }
 
-async function processUserMessage(chatId, userText, quotedMsg, isGroup, senderJid = null) {
+async function processUserMessage(chatId, userText, quotedMsg, isGroup, senderJid = null, opts = {}) {
   const tracker = new ProgressTracker(chatId, quotedMsg);
   let result = null;
   // Heuristic safety net: capture obvious teaching/correction even if the model doesn't self-flag.
@@ -1110,6 +1141,22 @@ async function processUserMessage(chatId, userText, quotedMsg, isGroup, senderJi
     if (!p || !p.trim()) continue;
     const isLast = i === parts.length - 1;
     await sendText(chatId, isLast ? p + meta : p, quotedMsg);
+  }
+
+  // Voice reply (mirror voice input OR /voice on) — ALWAYS alongside the text above.
+  if (opts.voiceReply && clean) {
+    try {
+      if (!tts.isAvailable()) {
+        console.warn("[TTS] model belum di-download — voice di-skip. Jalankan: node tts/supertonic/download-model.mjs");
+      } else {
+        const cfgV = getChatConfig(chatId);
+        const ttsLang = cfgV.preferred_lang || (i18n.getLang(chatId) === "en" ? "en" : "id");
+        await sock.sendPresenceUpdate("recording", chatId).catch(() => {});
+        const v = await tts.synthesize(clean, { lang: ttsLang });
+        if (v) await sendVoice(chatId, v.path, v.isOpus, quotedMsg);
+      }
+    } catch (e) { console.error("[TTS] synth:", e.message); }
+    finally { await sock.sendPresenceUpdate("paused", chatId).catch(() => {}); }
   }
 }
 
@@ -1371,8 +1418,10 @@ async function handleMessage(m) {
   lastReplyAt.set(chatId, Date.now());
   await reactMsg(chatId, msg.key, "⏳");
   await sock.sendPresenceUpdate("composing", chatId).catch(() => {});
+  // Voice reply if user sent a voice note (mirror) OR /voice on for this chat.
+  const voiceReply = isVoice || !!getChatConfig(chatId).voice_mode;
   try {
-    await enqueueOrRun(chatId, text, msg, isGroup, senderJid);
+    await enqueueOrRun(chatId, text, msg, isGroup, senderJid, { voiceReply });
     await reactMsg(chatId, msg.key, "✅");
   } catch (err) {
     await reactMsg(chatId, msg.key, "❌");

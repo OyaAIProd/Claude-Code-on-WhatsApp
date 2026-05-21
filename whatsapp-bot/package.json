@@ -5,17 +5,21 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "admin": "node admin/server.js"
+    "admin": "node admin/server.js",
+    "tts:download": "node tts/supertonic/download-model.mjs"
   },
   "dependencies": {
     "@whiskeysockets/baileys": "^6.7.0",
     "@xenova/transformers": "^2.17.2",
-    "express": "^4.21.0",
     "better-sqlite3": "^12.10.0",
     "docx": "^9.6.1",
     "dotenv": "^17.4.2",
+    "express": "^4.21.0",
+    "fft.js": "^4.0.4",
+    "js-yaml": "^4.1.1",
     "jszip": "^3.10.1",
     "mammoth": "^1.12.0",
+    "onnxruntime-node": "^1.26.0",
     "pdf-parse": "^2.4.5",
     "pdfkit": "^0.18.0",
     "pino": "^9.5.0",

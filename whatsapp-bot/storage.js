@@ -57,6 +57,9 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_cs_chat ON chat_sessions(chat_id);
 `);
 
+// Idempotent column add (older DBs created chat_config without voice_mode).
+try { db.exec("ALTER TABLE chat_config ADD COLUMN voice_mode INTEGER DEFAULT 0"); } catch {}
+
 function saveMessage(msg) {
   try {
     db.prepare(`INSERT OR IGNORE INTO messages
