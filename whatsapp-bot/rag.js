@@ -124,6 +124,8 @@ const RAG_TRIGGER_PATTERNS = [
 // ("tadi kep siapa yang berangkat") works the same as keyword queries.
 const QUESTION_WORDS = /\b(siapa|apa|apakah|kapan|dimana|di\s?mana|kemana|berapa|mana|gimana|bagaimana|adakah|udah|sudah|kah)\b/i;
 const RECALL_VERBS = /\b(berangkat|datang|pergi|sampai|tiba|kirim|terima|bayar|pesan|booking|jadwal|hadir|absen|izin|sakit|cuti|lapor)\b/i;
+// Data-retrieval / enumeration commands ("tunjukkan daftar nama", "list anggota", "rekap ...").
+const DATA_INTENT = /\b(tunjuk\w*|tampil\w*|daftar|list|sebut\w*|nama[- ]?nama|anggota|member|peserta|rekap\w*|laporan|riwayat|history|arsip|kasih\s+(tau|tahu|lihat|liat)|liat\w*|lihat\w*|cek\w*|carik\w*|cariin|temuk\w*|info\s+\w+|data\s+\w+)\b/i;
 
 function shouldDoRagSearch(userText) {
   if (!userText) return false;
@@ -133,8 +135,8 @@ function shouldDoRagSearch(userText) {
   if (greetingPattern.test(t)) return false;
   if (RAG_TRIGGER_PATTERNS.some(p => p.test(t))) return true;
   const wc = t.split(/\s+/).length;
-  // Any question word OR recall verb in a multi-word message → search memory.
-  if (wc >= 3 && (QUESTION_WORDS.test(t) || RECALL_VERBS.test(t))) return true;
+  // Question word OR recall verb OR data/enumeration intent in a multi-word message → search memory.
+  if (wc >= 3 && (QUESTION_WORDS.test(t) || RECALL_VERBS.test(t) || DATA_INTENT.test(t))) return true;
   if (wc >= 5 && /\?$/.test(t)) return true;
   return false;
 }

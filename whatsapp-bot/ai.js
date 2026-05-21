@@ -37,6 +37,7 @@ Lo full Claude Code agent — bukan chatbot rigid. Pakai inisiatif. Trust judgme
 - Kalau user MENGOREKSI atau NGAJARIN lo (mis "lain kali cari data X di Y", "harusnya gini", "yang bener Z", "datanya bukan di chat tapi di sheet") → SIMPAN jadi pelajaran. Taruh marker di AKHIR output: [LESSON: <topik singkat> | <pelajaran konkret & actionable, sebut sumber/lokasi/cara yang bener>]. Jangan kasih tau user soal marker — itu internal.
 - Kalau lo ngerjain prosedur/workflow yang BAKAL BERULANG (rekap, laporan, alur kerja), simpan jadi skill: [SKILL_SAVE: <nama skill> | <kapan dipakai / kata kunci trigger> | <langkah-langkah konkret>]. Jangan pakai karakter ] di dalam isi.
 - Section "📚 PELAJARAN" & "LOADED SKILLS" yang muncul di prompt = hasil belajar lo dulu. WAJIB dipatuhi & dipakai. Pelajaran > tebakan: kalau ada pelajaran soal lokasi data, langsung ikutin.
+- Pas user lagi NGAJARIN/ngoreksi ("lain kali ambil data dari X", "caranya begini"), AKUI singkat biar user tau lo nyerap: contoh "Oke, gw catat — lain kali gw ambil dari X." lalu langsung terapkan kalau bisa di turn ini juga. Lo emang adaptif kayak agent yang belajar dari pengalaman.
 
 🔎 CARI DULU, BARU NANYA — RULE PALING PENTING:
 User nanya sesuatu → JANGAN langsung balik nanya "maksud kamu apa?" / "file mana?" / "yang mana?". CARI sendiri dulu. Boleh nanya HANYA kalau udah cari beneran dan tetap buntu, ATAU keputusan irreversible.
@@ -304,7 +305,7 @@ function getEffort(chatId) { return getChatConfig(chatId).effort || process.env.
 function setEffort(chatId, effort) { setChatConfig(chatId, { effort }); }
 
 // Heuristic complexity classifier — free (no API). true = simple message.
-const COMPLEX_RE = /(analis|buatkan|bikin(in|kan|lah)?\b|strategi|backtest|review|jelas(in|kan)|bandingk|laporan|generate|pdf|excel|word|ppt|present|coding|\bcode\b|\bkode\b|program|script|debug|optim|refactor|rencana|\bplan\b|hitung|kalkulas|prediksi|forecast|\bbeli\b|\bjual\b|\bbuy\b|\bsell\b|trade|order|portfolio|workflow|ringkas|summar|recap|rekap)/i;
+const COMPLEX_RE = /(analis|buatkan|bikin(in|kan|lah)?\b|strategi|backtest|review|jelas(in|kan)|bandingk|laporan|generate|pdf|excel|word|ppt|present|coding|\bcode\b|\bkode\b|program|script|debug|optim|refactor|rencana|\bplan\b|hitung|kalkulas|prediksi|forecast|\bbeli\b|\bjual\b|\bbuy\b|\bsell\b|trade|order|portfolio|workflow|ringkas|summar|recap|rekap|tunjuk\w*|tampil\w*|daftar|\blist\b|sebut\w*|nama[- ]?nama|anggota|member|peserta|riwayat|arsip)/i;
 
 function classifyComplexity(userText) {
   const t = (userText || "").trim();
