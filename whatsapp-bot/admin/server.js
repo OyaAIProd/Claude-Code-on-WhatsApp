@@ -186,7 +186,8 @@ app.get("/api/map", (req, res) => {
       sender: l.sender_name, lat: l.lat, lng: l.lng, is_live: l.is_live, ts: l.ts,
       expired: locations.isExpired(l), place: l.place_name, chat: l.chat_name
     }));
-    res.json({ locations: locs, waypoints: locations.listWaypoints() });
+    const routes = locations.listRoutes().map(r => ({ name: r.name, stops: r.stops.map(w => ({ name: w.name, lat: w.lat, lng: w.lng })) }));
+    res.json({ locations: locs, waypoints: locations.listWaypoints(), routes });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 app.post("/api/waypoint", (req, res) => {

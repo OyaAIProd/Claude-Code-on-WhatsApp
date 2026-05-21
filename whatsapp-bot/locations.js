@@ -28,6 +28,13 @@ db.exec(`
     lng REAL,
     ts INTEGER DEFAULT (strftime('%s','now'))
   );
+  CREATE TABLE IF NOT EXISTS routes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT,
+    name_key TEXT UNIQUE,
+    stops TEXT,
+    ts INTEGER DEFAULT (strftime('%s','now'))
+  );
 `);
 
 function norm(s) {
@@ -157,6 +164,77 @@ function movementPhrase(a) {
   return "";
 }
 
+// ── Routes: ordered waypoint sequences (A→B→C) so order is unambiguous ──
+function addRoute(name, stopNames) {
+  const key = norm(name);
+  if (!key || !Array.isArray(stopNames) || stopNames.length < 2) return null;
+  const stopKeys = [];
+  for (const s of stopNames) {
+    const wk = norm(s);
+    const w = db.prepare("SELECT name_key FROM waypoints WHERE name_key=?").get(wk);
+    if (!w) return { error: `titik "${s}" belum ada (tambah dulu via /titik add)` };
+    stopKeys.push(wk);
+  }
+  try {
+    db.prepare(`INSERT INTO routes (name, name_key, stops) VALUES (?,?,?)
+      ON CONFLICT(name_key) DO UPDATE SET name=excluded.name, stops=excluded.stops, ts=strftime('%s','now')`).run(name, key, JSON.stringify(stopKeys));
+    return getRoute(name);
+  } catch (err) { console.error("[LOC] addRoute:", err.message); return null; }
+}
+function getRoute(name) {
+  const r = db.prepare("SELECT * FROM routes WHERE name_key=?").get(norm(name));
+  return r ? hydrateRoute(r) : null;
+}
+function listRoutes() {
+  try { return db.prepare("SELECT * FROM routes ORDER BY name").all().map(hydrateRoute); } catch { return []; }
+}
+function deleteRoute(name) {
+  try { return db.prepare("DELETE FROM routes WHERE name_key=?").run(norm(name)).changes > 0; } catch { return false; }
+}
+function hydrateRoute(r) {
+  let keys = [];
+  try { keys = JSON.parse(r.stops || "[]"); } catch {}
+  const stops = keys.map(k => db.prepare("SELECT * FROM waypoints WHERE name_key=?").get(k)).filter(Boolean);
+  return { id: r.id, name: r.name, name_key: r.name_key, stops };
+}
+
+// Pick the route whose stops include the person's nearest waypoint (the route they're likely on).
+function activeRouteFor(lat, lng) {
+  const near = nearestWaypoint(lat, lng);
+  if (!near) return null;
+  const routes = listRoutes();
+  for (const rt of routes) {
+    if (rt.stops.some(s => s.name_key === near.waypoint.name_key)) return rt;
+  }
+  return routes.length === 1 ? routes[0] : null;
+}
+
+// Route-aware: from/to stop with sequence numbers, so places aren't confused.
+function analyzeRoute(points, stops) {
+  if (!points.length || !stops || stops.length < 2) return null;
+  const cur = points[points.length - 1], ref = points[0];
+  let ni = 0, nd = Infinity;
+  stops.forEach((w, i) => { const d = haversineKm(cur.lat, cur.lng, w.lat, w.lng); if (d < nd) { nd = d; ni = i; } });
+  if (nd <= ARRIVE_KM) return { arrived: true, atIndex: ni, atStop: stops[ni], stops };
+  let app = null, appD = -0.2, lv = null, lvD = 0.2;
+  stops.forEach((w, i) => {
+    const dNow = haversineKm(cur.lat, cur.lng, w.lat, w.lng);
+    const dRef = haversineKm(ref.lat, ref.lng, w.lat, w.lng);
+    const delta = dNow - dRef;
+    if (delta < appD) { appD = delta; app = { w, i }; }
+    if (delta > lvD && dRef < 8) { lvD = delta; lv = { w, i }; }
+  });
+  return { arrived: false, approaching: app, leaving: lv, nearestIndex: ni, stops };
+}
+function routePhrase(a) {
+  if (!a) return "";
+  if (a.arrived) return `sudah sampai di ${a.atStop.name} (titik ke-${a.atIndex + 1})`;
+  if (a.leaving && a.approaching && a.leaving.i !== a.approaching.i)
+    return `habis dari ${a.leaving.w.name} (titik ${a.leaving.i + 1}), menuju ${a.approaching.w.name} (titik ${a.approaching.i + 1})`;
+  if (a.approaching) return `menuju ${a.approaching.w.name} (titik ${a.approaching.i + 1})`;
+  return "";
+}
+
 function fmtWIB(ts) {
   try { return new Date(ts * 1000).toLocaleString("en-GB", { timeZone: "Asia/Jakarta", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }); }
   catch { return "?"; }
@@ -173,12 +251,22 @@ function buildLocationContext(loc) {
   s += `• Tipe: ${loc.is_live ? "live" : "pin"}${loc.is_live ? (expired ? " (SUDAH EXPIRED)" : " (masih aktif)") : ""}\n`;
   s += `• Waktu: ${fmtWIB(loc.ts)} WIB (${ageH < 1 ? "barusan" : ageH < 18 ? Math.round(ageH) + " jam lalu" : Math.round(ageH / 24) + " hari lalu"})\n`;
   if (near) s += `• Titik terdekat: ${near.waypoint.name} (~${near.distanceKm.toFixed(1)} km)\n`;
+  let onRoute = false;
   try {
     const track = getTrack(loc.sender_jid, loc.chat_id, 8);
+    const route = activeRouteFor(loc.lat, loc.lng);
+    if (route && route.stops.length >= 2) {
+      onRoute = true;
+      s += `• Rute "${route.name}": ${route.stops.map((w, i) => `${i + 1}.${w.name}`).join(" → ")}\n`;
+      const rp = routePhrase(analyzeRoute(track, route.stops));
+      if (rp) s += `• Posisi di rute: ${rp}\n`;
+    }
     const phrase = movementPhrase(movementAnalysis(track));
     if (phrase) s += `• Pergerakan: ${phrase}\n`;
   } catch {}
-  s += `Cara jawab: sebut posisi (pakai "Pergerakan" di atas: lagi dimana + menuju kemana) + waktu. Kalau live EXPIRED, bilang "ini titik terakhir per [waktu], bukan posisi live sekarang". Kalau ada info lebih baru di chat (mis caption "otw X"), pakai itu.\n`;
+  s += `Cara jawab: sebut posisi (pakai "Posisi di rute"/"Pergerakan": lagi dimana + menuju titik mana, sebut urutannya) + waktu. Kalau live EXPIRED → "ini titik terakhir per [waktu], bukan posisi live sekarang".\n`;
+  if (onRoute) s += `PP/lanjutan: kalau orang ini udah di titik TERAKHIR rute lalu kirim caption/pesan "otw <tempat>" (gambar/video/teks), anggap dia MULAI leg berikutnya/balik menuju <tempat> dari titik terakhir. Pakai urutan rute biar gak ketuker tempat.\n`;
+  s += `Kalau ada info lebih baru di chat (mis caption "otw X"), itu menang atas titik lama.\n`;
   s += `Kalau user minta dikirimin lokasinya, akhiri output dengan marker: [SEND_LOCATION: ${loc.lat},${loc.lng} | ${loc.sender_name || "lokasi"}]\n`;
   return s;
 }
@@ -186,5 +274,6 @@ function buildLocationContext(loc) {
 module.exports = {
   saveLocation, latestForName, latestForJid, isExpired, haversineKm, nearestWaypoint,
   addWaypoint, listWaypoints, deleteWaypoint, recentLocations, buildLocationContext, norm,
-  getTrack, movementAnalysis, movementPhrase
+  getTrack, movementAnalysis, movementPhrase,
+  addRoute, getRoute, listRoutes, deleteRoute, activeRouteFor, analyzeRoute, routePhrase
 };

@@ -41,6 +41,16 @@
         const d = await r.json();
         layer.clearLayers();
         let bounds = [];
+        const palette = ['#7c3aed', '#0891b2', '#ea580c', '#0d9488'];
+        (d.routes || []).forEach((rt, ri) => {
+          const pts = (rt.stops || []).map(s => [s.lat, s.lng]);
+          if (pts.length >= 2) {
+            L.polyline(pts, { color: palette[ri % palette.length], weight: 4, opacity: .7, dashArray: '6,6' })
+              .bindPopup('🧭 <b>' + rt.name + '</b><br>' + rt.stops.map((s, i) => (i + 1) + '. ' + s.name).join('<br>'))
+              .addTo(layer);
+            pts.forEach(p => bounds.push(p));
+          }
+        });
         (d.waypoints || []).forEach(w => {
           L.circleMarker([w.lat, w.lng], { radius: 8, color: '#dc2626', fillColor: '#dc2626', fillOpacity: .9 })
             .bindPopup('📍 <b>' + w.name + '</b><br>' + w.lat + ', ' + w.lng + '<br><button onclick="delWp(\'' + w.name.replace(/'/g, "\\'") + '\')">hapus</button>')

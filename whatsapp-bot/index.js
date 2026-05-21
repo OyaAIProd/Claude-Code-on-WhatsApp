@@ -367,7 +367,7 @@ const BOT_LOCAL_COMMANDS = new Set([
   "/event", "/events", "/ics", "/cal",
   "/ui-lang", "/uilang", "/version", "/update-check",
   "/lessons", "/lesson-del", "/skills", "/skill", "/skill-del", "/voice",
-  "/facts", "/fact-del", "/lokasi", "/titik"
+  "/facts", "/fact-del", "/lokasi", "/titik", "/rute"
 ]);
 
 async function handleCommand(chatId, senderJid, text, isGroup, msg) {
@@ -393,7 +393,7 @@ async function handleCommand(chatId, senderJid, text, isGroup, msg) {
         button: `🔘 *PILIHAN & PREFERENSI*\n/pilih <n> atau /pick <n> — pilih opsi tombol\n/remembered — preferensi tersimpan\n/forget <pattern> — hapus preferensi`,
         learn: `🧠 *BELAJAR & SKILL*\nBot belajar otomatis dari: (1) koreksi lo, (2) tanya-jawab orang di grup.\n/lessons — pelajaran dari koreksi lo\n/lesson-del <id> — hapus (boss)\n/facts — fakta dari obrolan grup (status + alasan)\n/fact-del <id> — hapus fakta (boss)\n/skills — daftar skill\n/skill <nama> — detail skill\n/skill-del <nama> — hapus skill (boss)`,
         voice: `🔊 *VOICE / TTS*\nBot bisa bales pakai voice note (suara natural Supertonic).\n/voice on — semua balasan + voice note (tetap ada teks)\n/voice off — teks aja\n_Kirim voice → bot auto-bales voice juga (mirror), walau mode off._\nSetup model sekali: \`node tts/supertonic/download-model.mjs\``,
-        lokasi: `📍 *LOKASI & PETA*\nKirim share lokasi → bot inget siapa + dimana. Tanya "X dimana / udah sampai mana" → bot jawab + bisa kirim pin.\n/lokasi <nama> — kirim pin lokasi terakhir orang itu\n/titik — daftar titik bernama\n/titik add <nama> <lat> <lng> — tambah titik\n/titik del <nama> — hapus titik\nPeta web (klik tambah titik): http://localhost:${process.env.ADMIN_PORT || "3458"}/map`
+        lokasi: `📍 *LOKASI & PETA*\nKirim share lokasi → bot inget siapa + dimana + arah. Tanya "X dimana / udah sampai mana" → bot jawab + kirim pin.\n/lokasi <nama> — pin + posisi terakhir orang itu\n/titik — daftar titik bernama\n/titik add <nama> <lat> <lng> — tambah titik\n/titik del <nama> — hapus\n/rute — daftar rute urut\n/rute add <nama>: A > B > C — buat urutan perjalanan\n/rute del <nama> — hapus rute\nPeta web (klik tambah titik): http://localhost:${process.env.ADMIN_PORT || "3458"}/map`
       };
       const t = HELP_TOPICS[topic];
       if (t) return sendText(chatId, t, msg);
@@ -1121,6 +1121,37 @@ async function handleCommand(chatId, senderJid, text, isGroup, msg) {
     if (!list.length) return sendText(chatId, `🗺️ Belum ada titik.\nTambah: /titik add <nama> <lat> <lng>\nAtau klik di peta: http://localhost:${port}/map`, msg);
     const lines = list.map(w => `• *${w.name}* (${w.lat}, ${w.lng})`);
     return sendText(chatId, `🗺️ *TITIK (${list.length})*\n\n${lines.join("\n")}\n\nPeta web: http://localhost:${port}/map\n_Tambah: /titik add <nama> <lat> <lng> · Hapus: /titik del <nama>_`, msg);
+  }
+
+  if (cmd === "/rute") {
+    const sub = (parts[1] || "").toLowerCase();
+    if (sub === "add") {
+      if (!boss) return sendText(chatId, "❌ Boss only.", msg);
+      const rest = argText.replace(/^add\s+/i, "");
+      const colon = rest.indexOf(":");
+      if (colon < 0) return sendText(chatId, "Format: /rute add <nama>: titikA > titikB > titikC\nContoh: /rute add tembilahan: titik A > saka jalan > pulau burung\n_(titik harus udah ada via /titik add)_", msg);
+      const rname = rest.slice(0, colon).trim();
+      const stops = rest.slice(colon + 1).split(/[>,]/).map(s => s.trim()).filter(Boolean);
+      if (stops.length < 2) return sendText(chatId, "Minimal 2 titik. Pisah pakai > atau ,", msg);
+      const r = locations.addRoute(rname, stops);
+      if (r && r.error) return sendText(chatId, `❌ ${r.error}`, msg);
+      if (!r) return sendText(chatId, "❌ Gagal simpan rute.", msg);
+      return sendText(chatId, `✅ Rute *${r.name}*:\n${r.stops.map((w, i) => `${i + 1}. ${w.name}`).join("\n")}`, msg);
+    }
+    if (sub === "del") {
+      if (!boss) return sendText(chatId, "❌ Boss only.", msg);
+      const name = argText.replace(/^del\s+/i, "").trim();
+      return sendText(chatId, locations.deleteRoute(name) ? `🗑️ Rute "${name}" dihapus.` : `❌ "${name}" gak ada.`, msg);
+    }
+    if (argText && sub !== "list") {
+      const r = locations.getRoute(argText);
+      if (!r) return sendText(chatId, `❌ Rute "${argText}" gak ada.`, msg);
+      return sendText(chatId, `🧭 *${r.name}*\n${r.stops.map((w, i) => `${i + 1}. ${w.name} (${w.lat}, ${w.lng})`).join("\n")}`, msg);
+    }
+    const routes = locations.listRoutes();
+    if (!routes.length) return sendText(chatId, "🧭 Belum ada rute.\nBuat: /rute add <nama>: titikA > titikB > titikC", msg);
+    const lines = routes.map(r => `• *${r.name}*: ${r.stops.map(w => w.name).join(" → ")}`);
+    return sendText(chatId, `🧭 *RUTE (${routes.length})*\n\n${lines.join("\n")}\n\n_Buat: /rute add <nama>: A > B > C · Hapus: /rute del <nama>_`, msg);
   }
 
   if (cmd === "/skills") {
