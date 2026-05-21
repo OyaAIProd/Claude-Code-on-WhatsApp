@@ -292,6 +292,27 @@ function setCwd(chatId, cwd) { setChatConfig(chatId, { cwd }); }
 function getEffort(chatId) { return getChatConfig(chatId).effort || process.env.CLAUDE_DEFAULT_EFFORT || null; }
 function setEffort(chatId, effort) { setChatConfig(chatId, { effort }); }
 
+// Heuristic complexity classifier — free (no API). true = simple message.
+const COMPLEX_RE = /(analis|buatkan|bikin(in|kan|lah)?\b|strategi|backtest|review|jelas(in|kan)|bandingk|laporan|generate|pdf|excel|word|ppt|present|coding|\bcode\b|\bkode\b|program|script|debug|optim|refactor|rencana|\bplan\b|hitung|kalkulas|prediksi|forecast|\bbeli\b|\bjual\b|\bbuy\b|\bsell\b|trade|order|portfolio|workflow|ringkas|summar|recap|rekap)/i;
+
+function classifyComplexity(userText) {
+  const t = (userText || "").trim();
+  if (!t) return true;
+  if (rag.shouldDoRagSearch(t)) return false;   // recall/search → needs reasoning + RAG
+  if (COMPLEX_RE.test(t)) return false;
+  if (t.length > 140) return false;
+  if (t.split(/\s+/).length > 28) return false;
+  return true;
+}
+
+// Resolve model: explicit (haiku/sonnet/opus) = manual; null/"auto" = auto-route haiku|sonnet.
+function resolveModel(cfg, userText) {
+  const stored = cfg && cfg.model;
+  if (stored && stored !== "auto") return { model: stored, simple: false, auto: false };
+  const simple = classifyComplexity(userText);
+  return { model: simple ? "haiku" : "sonnet", simple, auto: true };
+}
+
 function buildContext(messages, isGroup) {
   if (!messages.length) return "";
   const chatName = messages[messages.length - 1]?.chat_name || "(unknown)";
@@ -424,10 +445,13 @@ function dispatchEvent(evt, onEvent) {
 
 async function streamMessage(userText, chatId, contextMessages = [], isGroup = false, onEvent = () => {}, senderJid = null) {
   const cwd = getCwd(chatId);
-  const model = getModel(chatId);
   const cfg = getChatConfig(chatId);
+  const route = resolveModel(cfg, userText);
+  const model = route.model;
+  const simple = route.simple;            // auto + trivial → skip heavy preprocessing for speed
   const permMode = cfg?.permission_mode || PERMISSION_MODE;
   const safeMode = !!cfg?.safe_mode;
+  if (route.auto) onEvent({ type: "tool_use", name: "route", input: {}, label: `🧠 auto: ${model}` });
 
   if (senderJid) {
     const check = budgets.checkBudget(senderJid, isBoss(senderJid));
@@ -449,8 +473,10 @@ async function streamMessage(userText, chatId, contextMessages = [], isGroup = f
     systemPrompt += `\n\n🌐 BAHASA: User chat ini prefer reply dalam ${langName} (kode: ${cfg.preferred_lang}). SELALU jawab dalam bahasa itu, even kalo input bahasa lain.\n`;
   }
 
-  const profiles = rag.getGroupProfiles(chatId, 8);
-  if (profiles.length) systemPrompt += rag.buildGroupProfilesContext(profiles, chatId);
+  if (!simple) {
+    const profiles = rag.getGroupProfiles(chatId, 8);
+    if (profiles.length) systemPrompt += rag.buildGroupProfilesContext(profiles, chatId);
+  }
 
   const lastSenderJid = contextMessages.length ? contextMessages[contextMessages.length - 1].sender_jid : null;
   if (lastSenderJid && !isGroup) {
@@ -462,10 +488,12 @@ async function streamMessage(userText, chatId, contextMessages = [], isGroup = f
   systemPrompt += personaInfo.prompt;
   onEvent({ type: "tool_use", name: "persona", input: {}, label: `🎭 persona: ${personaInfo.effective}` });
 
-  try {
-    const kbMatches = knowledge.searchKnowledge(userText, 4);
-    if (kbMatches.length) systemPrompt += knowledge.buildKnowledgeContext(kbMatches);
-  } catch {}
+  if (!simple) {
+    try {
+      const kbMatches = knowledge.searchKnowledge(userText, 4);
+      if (kbMatches.length) systemPrompt += knowledge.buildKnowledgeContext(kbMatches);
+    } catch {}
+  }
 
   try {
     const remembered = buttonsMod.listRemembered(chatId);
@@ -479,7 +507,7 @@ async function streamMessage(userText, chatId, contextMessages = [], isGroup = f
   // Keeps token cost low — inject max 3 ranked matches, short descriptions only.
   const IMG_WORD = /\b(foto|gambar|image|picture|photo)\b/i;
   const IMG_RECALL = /(mana|tadi|kemarin|yang|itu|inget|ingat|cari|carikan|cariin|kirim|show|liat|lihat|tunjuk|soal|tentang|\?)/i;
-  if (IMG_WORD.test(userText) && IMG_RECALL.test(userText)) {
+  if (!simple && IMG_WORD.test(userText) && IMG_RECALL.test(userText)) {
     try {
       const imgMatches = rag.searchImagesByDescription(userText, { limit: 3 });
       if (imgMatches.length) {
@@ -495,15 +523,17 @@ async function streamMessage(userText, chatId, contextMessages = [], isGroup = f
   }
 
   // Inject visual-entity memory only when the query names a known entity (precise + token-cheap).
-  try {
-    const ents = entities.getRelevantEntities(chatId, userText, 5);
-    const nk = entities.nameKey(userText);
-    const named = ents.filter(e => e.name_key && nk.includes(e.name_key));
-    if (named.length) {
-      systemPrompt += entities.buildEntityContext(named);
-      onEvent({ type: "tool_use", name: "entity", input: {}, label: `🧩 ${named.length} entitas` });
-    }
-  } catch {}
+  if (!simple) {
+    try {
+      const ents = entities.getRelevantEntities(chatId, userText, 5);
+      const nk = entities.nameKey(userText);
+      const named = ents.filter(e => e.name_key && nk.includes(e.name_key));
+      if (named.length) {
+        systemPrompt += entities.buildEntityContext(named);
+        onEvent({ type: "tool_use", name: "entity", input: {}, label: `🧩 ${named.length} entitas` });
+      }
+    } catch {}
+  }
 
   if (rag.shouldDoRagSearch(userText)) {
     const ftsMatches = rag.searchAllMessages(userText, { limit: 5 });
@@ -548,7 +578,7 @@ async function streamMessage(userText, chatId, contextMessages = [], isGroup = f
 
   let sessionId = getSessionId(chatId);
   let useResume = !!sessionId;
-  let useEffort = effortValid;
+  let useEffort = effortValid && !simple;   // simple msgs skip reasoning effort → faster
   let lastErr = "no output";
   let lastCode = -1;
 

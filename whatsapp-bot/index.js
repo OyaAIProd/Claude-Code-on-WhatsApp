@@ -295,7 +295,7 @@ async function handleCommand(chatId, senderJid, text, isGroup, msg) {
     if (topic) {
       const HELP_TOPICS = {
         session: `📂 *SESSION (boss)*\n/sessions — list semua session\n/new [nama] — bikin session baru\n/resume <n> — pindah ke session n\n/rename <nama> — ganti nama current\n/delete <n> — hapus session n\n/reset — drop current (next msg bikin baru)`,
-        setup: `⚙️ *SETUP (boss)*\n/model [sonnet|opus|haiku] — ganti model\n/effort [low|medium|high|xhigh|max] — depth reasoning\n/safe on|off — konfirmasi sebelum action risky\n/permission <mode> — bypassPermissions/default/plan/dll\n/cd <path> • /pwd • /home — working dir`,
+        setup: `⚙️ *SETUP (boss)*\n/model auto|haiku|sonnet|opus — model (auto=hemat: simpel→haiku, berat→sonnet)\n/effort [low|medium|high|xhigh|max] — depth reasoning\n/safe on|off — konfirmasi sebelum action risky\n/permission <mode> — bypassPermissions/default/plan/dll\n/cd <path> • /pwd • /home — working dir`,
         rag: `🧠 *MEMORY & SEARCH*\n/search <kata> — cari di SEMUA group/DM\n/whosaid <kata> — siapa pernah bilang\n/summarize [N] — ringkas N pesan terakhir\n/recent [N] — N pesan terakhir\n/topics — daftar group + topiknya\n/profile — profil group ini\n/profile-gen — regen profil group (boss)\n/embedstatus • /embed-backfill — vector index`,
         file: `📎 *FILE*\n/files — list file di chat ini\n/send <path> — kirim file dari disk\n/analyze <path> — analisa isi file\nKirim PDF/DOCX/XLSX/PPTX/foto → auto-extract.\nMinta bikin file → bot generate native (bukan HTML).`,
         lang: `🌐 *BAHASA*\n/lang — set bahasa reply Claude\n/language — list 19 bahasa\n/translate on|off — auto-translate\n/ui-lang id|en — bahasa UI bot/menu`,
@@ -379,10 +379,15 @@ async function handleCommand(chatId, senderJid, text, isGroup, msg) {
   }
 
   if (cmd === "/model") {
-    if (!argText) return sendText(chatId, `🧠 Model: *${getModel(chatId)}*\n\nGanti (boss): /model sonnet | opus | haiku`, msg);
+    const curRaw = getChatConfig(chatId).model;
+    const cur = (!curRaw || curRaw === "auto") ? "auto (haiku⇄sonnet otomatis)" : `${curRaw} (manual)`;
+    if (!argText) return sendText(chatId, `🧠 Model: *${cur}*\n\nGanti (boss): /model auto | haiku | sonnet | opus\n_auto = hemat: pesan simpel→haiku, berat→sonnet_`, msg);
     if (!boss) return sendText(chatId, "❌ Boss only.", msg);
-    setModel(chatId, argText);
-    return sendText(chatId, `✅ Model → *${argText}*`, msg);
+    const m = argText.toLowerCase();
+    const valid = ["auto", "haiku", "sonnet", "opus"];
+    if (!valid.includes(m)) return sendText(chatId, `❌ Pilih: ${valid.join(" | ")}`, msg);
+    setModel(chatId, m);
+    return sendText(chatId, m === "auto" ? `✅ Model → *auto* (hemat: simpel→haiku, berat→sonnet)` : `✅ Model → *${m}* (manual, auto-routing mati)`, msg);
   }
 
   if (cmd === "/safe" || cmd === "/safe-mode") {
