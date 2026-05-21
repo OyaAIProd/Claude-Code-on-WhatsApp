@@ -14,6 +14,8 @@ const { isBoss } = require("./bosses");
 const knowledge = require("./knowledge");
 const buttonsMod = require("./buttons");
 const entities = require("./entities");
+const learning = require("./learning");
+const skills = require("./skills_mod");
 const i18n = require("./i18n");
 
 const CLAUDE_BIN = process.env.CLAUDE_BIN || "claude";
@@ -30,6 +32,11 @@ Lo full Claude Code agent — bukan chatbot rigid. Pakai inisiatif. Trust judgme
 - Jangan terlalu cautious. User minta hapus file → hapus. User minta install package → install. Bot udah punya bypassPermissions, lo punya kebebasan.
 - Jangan over-explain. Kalau bisa langsung jawab, langsung jawab. Skip preamble.
 - Kalau task butuh banyak step, jalanin semuanya sekaligus tanpa nanya konfirmasi tiap step (kecuali safe-mode aktif).
+
+🧠 BELAJAR DARI PENGALAMAN & SKILL (PENTING — bikin lo makin pinter tiap dipakai):
+- Kalau user MENGOREKSI atau NGAJARIN lo (mis "lain kali cari data X di Y", "harusnya gini", "yang bener Z", "datanya bukan di chat tapi di sheet") → SIMPAN jadi pelajaran. Taruh marker di AKHIR output: [LESSON: <topik singkat> | <pelajaran konkret & actionable, sebut sumber/lokasi/cara yang bener>]. Jangan kasih tau user soal marker — itu internal.
+- Kalau lo ngerjain prosedur/workflow yang BAKAL BERULANG (rekap, laporan, alur kerja), simpan jadi skill: [SKILL_SAVE: <nama skill> | <kapan dipakai / kata kunci trigger> | <langkah-langkah konkret>]. Jangan pakai karakter ] di dalam isi.
+- Section "📚 PELAJARAN" & "LOADED SKILLS" yang muncul di prompt = hasil belajar lo dulu. WAJIB dipatuhi & dipakai. Pelajaran > tebakan: kalau ada pelajaran soal lokasi data, langsung ikutin.
 
 🔎 CARI DULU, BARU NANYA — RULE PALING PENTING:
 User nanya sesuatu → JANGAN langsung balik nanya "maksud kamu apa?" / "file mana?" / "yang mana?". CARI sendiri dulu. Boleh nanya HANYA kalau udah cari beneran dan tetap buntu, ATAU keputusan irreversible.
@@ -560,6 +567,24 @@ async function streamMessage(userText, chatId, contextMessages = [], isGroup = f
       systemPrompt += rag.buildRagContext(truncated);
       onEvent({ type: "tool_use", name: "RAG", input: {}, label: `🔎 RAG: ${ftsMatches.length} fts + ${semanticMatches.length} semantic` });
     }
+  }
+
+  // Learned lessons + reusable skills — inject only relevant ones (FTS-matched, token-cheap).
+  if (!simple) {
+    try {
+      const lessons = learning.searchLessons(chatId, userText, 4);
+      if (lessons.length) {
+        systemPrompt += learning.buildLessonContext(lessons);
+        onEvent({ type: "tool_use", name: "lessons", input: {}, label: `📚 ${lessons.length} pelajaran` });
+      }
+    } catch {}
+    try {
+      const sk = skills.matchSkills(userText, chatId, 2);
+      if (sk.length) {
+        systemPrompt += skills.buildSkillContext(sk);
+        onEvent({ type: "tool_use", name: "skills", input: {}, label: `🛠️ skill: ${sk.map(s => s.name).join(", ").slice(0, 40)}` });
+      }
+    } catch {}
   }
 
   if (safeMode) systemPrompt += SAFE_MODE_APPEND;

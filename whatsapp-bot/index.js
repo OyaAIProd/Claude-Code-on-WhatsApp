@@ -36,6 +36,8 @@ const scheduler = require("./scheduler");
 const pii = require("./pii");
 const vision = require("./vision");
 const entities = require("./entities");
+const learning = require("./learning");
+const skills = require("./skills_mod");
 const persona = require("./persona");
 const plugins = require("./plugins");
 const workflows = require("./workflows");
@@ -210,6 +212,30 @@ function extractAttachMarkers(text) {
   return { cleaned: cleaned.trim(), files };
 }
 
+// [LESSON: topik | pelajaran] → simpan pelajaran, hapus marker dari output.
+function extractLessonMarkers(text, chatId) {
+  if (!text) return { cleaned: text, count: 0 };
+  let count = 0;
+  const cleaned = text.replace(/\[LESSON:\s*([^\]|]+?)\s*\|\s*([\s\S]+?)\]/g, (m, key, lesson) => {
+    try { if (learning.saveLesson(chatId, { topicKey: key.trim(), lesson: lesson.trim() })) count++; } catch {}
+    return "";
+  });
+  return { cleaned: cleaned.trim(), count };
+}
+
+// [SKILL_SAVE: nama | kapan dipakai | isi prosedur] → simpan skill, hapus marker.
+function extractSkillMarkers(text, chatId) {
+  if (!text) return { cleaned: text, names: [] };
+  const names = [];
+  const cleaned = text.replace(/\[SKILL_SAVE:\s*([^\]|]+?)\s*\|\s*([^\]|]+?)\s*\|\s*([\s\S]+?)\]/g, (m, name, when, content) => {
+    try {
+      if (skills.saveSkill({ name: name.trim(), description: when.trim(), content: content.trim(), chatId, scope: "global" })) names.push(name.trim());
+    } catch {}
+    return "";
+  });
+  return { cleaned: cleaned.trim(), names };
+}
+
 class ProgressTracker {
   constructor(chatId, quotedMsg) {
     this.chatId = chatId;
@@ -279,7 +305,8 @@ const BOT_LOCAL_COMMANDS = new Set([
   "/language", "/import", "/imports", "/import-delete",
   "/pilih", "/pick", "/remembered", "/forget",
   "/event", "/events", "/ics", "/cal",
-  "/ui-lang", "/uilang", "/version", "/update-check"
+  "/ui-lang", "/uilang", "/version", "/update-check",
+  "/lessons", "/lesson-del", "/skills", "/skill", "/skill-del"
 ]);
 
 async function handleCommand(chatId, senderJid, text, isGroup, msg) {
@@ -302,11 +329,12 @@ async function handleCommand(chatId, senderJid, text, isGroup, msg) {
         budget: `💰 *BUDGET & AUDIT (boss)*\n/budget [jid] — lihat budget user\n/budgets — semua budget\n/audit [N] — log aksi\n/pii — toggle deteksi data sensitif\n/backup — backup DB manual`,
         auto: `⏰ *OTOMASI (boss)*\n/remind <waktu> <pesan> — reminder\n/reminders — list reminder\n/cron — jadwal berulang\n/event • /events • /ics • /cal — kalender\n/wf • /workflow • /workflows — mini-workflow\n/plugins • /plugin-reload — plugin`,
         admin: `👑 *ADMIN (boss)*\n/boss-add <nomor> • /boss-remove • /list-bosses\n/list-chats — semua chat\n/dm-on|off — bot balas DM\n/listen-on|off — bot dengar group ini\n/users • /userprofile — profil user\n/persona — ganti gaya bot\n/version • /update-check — cek update`,
-        button: `🔘 *PILIHAN & PREFERENSI*\n/pilih <n> atau /pick <n> — pilih opsi tombol\n/remembered — preferensi tersimpan\n/forget <pattern> — hapus preferensi`
+        button: `🔘 *PILIHAN & PREFERENSI*\n/pilih <n> atau /pick <n> — pilih opsi tombol\n/remembered — preferensi tersimpan\n/forget <pattern> — hapus preferensi`,
+        learn: `🧠 *BELAJAR & SKILL*\nBot belajar otomatis dari koreksi lo (mis "lain kali cari data X di Y") + bikin skill buat tugas berulang.\n/lessons — pelajaran tersimpan\n/lesson-del <id> — hapus pelajaran (boss)\n/skills — daftar skill\n/skill <nama> — detail skill\n/skill-del <nama> — hapus skill (boss)`
       };
       const t = HELP_TOPICS[topic];
       if (t) return sendText(chatId, t, msg);
-      return sendText(chatId, `❓ Topik "${topic}" gak ada.\nTopik: session, setup, rag, file, lang, budget, auto, admin, button`, msg);
+      return sendText(chatId, `❓ Topik "${topic}" gak ada.\nTopik: session, setup, rag, file, lang, budget, auto, admin, button, learn`, msg);
     }
     return sendText(chatId,
       `🤖 *Claude Code di WhatsApp*\n\n` +
@@ -323,6 +351,7 @@ async function handleCommand(chatId, senderJid, text, isGroup, msg) {
       `• \`/help auto\` — remind, cron, workflow, kalender\n` +
       `• \`/help admin\` — boss, persona, listen\n` +
       `• \`/help button\` — pilihan & preferensi\n` +
+      `• \`/help learn\` — belajar dari koreksi + skills\n` +
       `━━━━━━━━━━━━━━\n` +
       `*Sering dipakai:*\n` +
       `/search <kata> • /summarize • /recent • /files\n` +
@@ -969,12 +998,47 @@ async function handleCommand(chatId, senderJid, text, isGroup, msg) {
     return sendText(chatId, `📋 *${n} pesan terakhir:*\n\n${msgs.map(m => `• *${m.sender_name || "?"}*: ${(m.text || "(media)").slice(0, 80)}`).join("\n")}`, msg);
   }
 
+  if (cmd === "/lessons") {
+    const list = learning.listLessons(chatId, 30);
+    if (!list.length) return sendText(chatId, "📚 Belum ada pelajaran. Bot belajar otomatis tiap lo koreksi (mis \"lain kali cari data X di Y\").", msg);
+    const lines = list.map(l => `*#${l.id}* ${l.scope === "global" ? "🌐" : ""} ${l.lesson.slice(0, 120)}`);
+    return sendText(chatId, `📚 *PELAJARAN (${list.length})*\n\n${lines.join("\n")}\n\n_Hapus: /lesson-del <id>_`, msg);
+  }
+  if (cmd === "/lesson-del") {
+    if (!boss) return sendText(chatId, "❌ Boss only.", msg);
+    const id = parseInt(argText, 10);
+    if (!id) return sendText(chatId, "Format: /lesson-del <id> (liat /lessons)", msg);
+    return sendText(chatId, learning.deleteLesson(id) ? `🗑️ Pelajaran #${id} dihapus.` : `❌ #${id} gak ada.`, msg);
+  }
+  if (cmd === "/skills") {
+    const list = skills.listSkills(50);
+    if (!list.length) return sendText(chatId, "🛠️ Belum ada skill. Bot bikin sendiri pas ada prosedur berulang, atau ajarin: \"kalau aku minta X, lakuin langkah A,B,C\".", msg);
+    const lines = list.map(s => `🛠️ *${s.name}* _(${s.uses}x)_${s.description ? `\n   ${s.description.slice(0, 80)}` : ""}`);
+    return sendText(chatId, `🛠️ *SKILLS (${list.length})*\n\n${lines.join("\n")}\n\n_Detail: /skill <nama> · Hapus: /skill-del <nama>_`, msg);
+  }
+  if (cmd === "/skill") {
+    if (!argText) return sendText(chatId, "Format: /skill <nama> (liat /skills)", msg);
+    const s = skills.getSkill(argText);
+    if (!s) return sendText(chatId, `❌ Skill "${argText}" gak ada.`, msg);
+    return sendText(chatId, `🛠️ *${s.name}* _(dipakai ${s.uses}x)_\n📌 ${s.description || "-"}\n\n${s.content}`, msg);
+  }
+  if (cmd === "/skill-del") {
+    if (!boss) return sendText(chatId, "❌ Boss only.", msg);
+    if (!argText) return sendText(chatId, "Format: /skill-del <nama>", msg);
+    return sendText(chatId, skills.deleteSkill(argText) ? `🗑️ Skill "${argText}" dihapus.` : `❌ "${argText}" gak ada.`, msg);
+  }
+
   return false;
 }
 
 async function processUserMessage(chatId, userText, quotedMsg, isGroup, senderJid = null) {
   const tracker = new ProgressTracker(chatId, quotedMsg);
   let result = null;
+  // Heuristic safety net: capture obvious teaching/correction even if the model doesn't self-flag.
+  try {
+    const corr = learning.detectCorrection(userText);
+    if (corr) { learning.saveLesson(chatId, { topicKey: corr.topicKey, lesson: corr.lesson, source: userText }); console.log(`[LESSON] auto-captured from correction`); }
+  } catch {}
   try {
     const context = getRecentMessages(chatId, 35);
     let lastThinkingAt = 0;
@@ -1012,7 +1076,12 @@ async function processUserMessage(chatId, userText, quotedMsg, isGroup, senderJi
     await sendDocument(chatId, f.path, f.name, "", quotedMsg);
   }
 
-  const { cleaned: afterRemember, pattern: rememberPat } = buttonsMod.extractRememberPattern(afterAttach);
+  const { cleaned: afterLesson, count: lessonCount } = extractLessonMarkers(afterAttach, chatId);
+  if (lessonCount) console.log(`[LESSON] saved ${lessonCount} from ${chatId}`);
+  const { cleaned: afterSkill, names: skillNames } = extractSkillMarkers(afterLesson, chatId);
+  if (skillNames.length) console.log(`[SKILL] saved: ${skillNames.join(", ")}`);
+
+  const { cleaned: afterRemember, pattern: rememberPat } = buttonsMod.extractRememberPattern(afterSkill);
   const { cleaned: afterButtons, buttons } = buttonsMod.extractButtonMarker(afterRemember);
 
   if (buttons && buttons.length) {
