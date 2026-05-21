@@ -16,6 +16,7 @@ const buttonsMod = require("./buttons");
 const entities = require("./entities");
 const learning = require("./learning");
 const skills = require("./skills_mod");
+const qaLearning = require("./qa_learning");
 const i18n = require("./i18n");
 
 const CLAUDE_BIN = process.env.CLAUDE_BIN || "claude";
@@ -595,6 +596,13 @@ async function streamMessage(userText, chatId, contextMessages = [], isGroup = f
       if (sk.length) {
         systemPrompt += skills.buildSkillContext(sk);
         onEvent({ type: "tool_use", name: "skills", input: {}, label: `🛠️ skill: ${sk.map(s => s.name).join(", ").slice(0, 40)}` });
+      }
+    } catch {}
+    try {
+      const facts = qaLearning.searchFacts(chatId, userText, 3);
+      if (facts.length) {
+        systemPrompt += qaLearning.buildFactContext(facts);
+        onEvent({ type: "tool_use", name: "qa_facts", input: {}, label: `📌 ${facts.length} fakta` });
       }
     } catch {}
   }

@@ -41,6 +41,7 @@ const vision = require("./vision");
 const entities = require("./entities");
 const learning = require("./learning");
 const skills = require("./skills_mod");
+const qaLearning = require("./qa_learning");
 const tts = require("./tts");
 const persona = require("./persona");
 const plugins = require("./plugins");
@@ -326,7 +327,8 @@ const BOT_LOCAL_COMMANDS = new Set([
   "/pilih", "/pick", "/remembered", "/forget",
   "/event", "/events", "/ics", "/cal",
   "/ui-lang", "/uilang", "/version", "/update-check",
-  "/lessons", "/lesson-del", "/skills", "/skill", "/skill-del", "/voice"
+  "/lessons", "/lesson-del", "/skills", "/skill", "/skill-del", "/voice",
+  "/facts", "/fact-del"
 ]);
 
 async function handleCommand(chatId, senderJid, text, isGroup, msg) {
@@ -350,7 +352,7 @@ async function handleCommand(chatId, senderJid, text, isGroup, msg) {
         auto: `⏰ *OTOMASI (boss)*\n/remind <waktu> <pesan> — reminder\n/reminders — list reminder\n/cron — jadwal berulang\n/event • /events • /ics • /cal — kalender\n/wf • /workflow • /workflows — mini-workflow\n/plugins • /plugin-reload — plugin`,
         admin: `👑 *ADMIN (boss)*\n/boss-add <nomor> • /boss-remove • /list-bosses\n/list-chats — semua chat\n/dm-on|off — bot balas DM\n/listen-on|off — bot dengar group ini\n/users • /userprofile — profil user\n/persona — ganti gaya bot\n/version • /update-check — cek update`,
         button: `🔘 *PILIHAN & PREFERENSI*\n/pilih <n> atau /pick <n> — pilih opsi tombol\n/remembered — preferensi tersimpan\n/forget <pattern> — hapus preferensi`,
-        learn: `🧠 *BELAJAR & SKILL*\nBot belajar otomatis dari koreksi lo (mis "lain kali cari data X di Y") + bikin skill buat tugas berulang.\n/lessons — pelajaran tersimpan\n/lesson-del <id> — hapus pelajaran (boss)\n/skills — daftar skill\n/skill <nama> — detail skill\n/skill-del <nama> — hapus skill (boss)`,
+        learn: `🧠 *BELAJAR & SKILL*\nBot belajar otomatis dari: (1) koreksi lo, (2) tanya-jawab orang di grup.\n/lessons — pelajaran dari koreksi lo\n/lesson-del <id> — hapus (boss)\n/facts — fakta dari obrolan grup (status + alasan)\n/fact-del <id> — hapus fakta (boss)\n/skills — daftar skill\n/skill <nama> — detail skill\n/skill-del <nama> — hapus skill (boss)`,
         voice: `🔊 *VOICE / TTS*\nBot bisa bales pakai voice note (suara natural Supertonic).\n/voice on — semua balasan + voice note (tetap ada teks)\n/voice off — teks aja\n_Kirim voice → bot auto-bales voice juga (mirror), walau mode off._\nSetup model sekali: \`node tts/supertonic/download-model.mjs\``
       };
       const t = HELP_TOPICS[topic];
@@ -1032,6 +1034,22 @@ async function handleCommand(chatId, senderJid, text, isGroup, msg) {
     if (!id) return sendText(chatId, "Format: /lesson-del <id> (liat /lessons)", msg);
     return sendText(chatId, learning.deleteLesson(id) ? `🗑️ Pelajaran #${id} dihapus.` : `❌ #${id} gak ada.`, msg);
   }
+  if (cmd === "/facts") {
+    const list = qaLearning.listFacts(chatId, 30);
+    if (!list.length) return sendText(chatId, "📌 Belum ada fakta terpelajar. Bot otomatis nyerap dari tanya-jawab di grup (status + alasan).", msg);
+    const lines = list.map(f => {
+      const when = f.fact_ts ? new Date(f.fact_ts * 1000).toLocaleString("en-GB", { timeZone: "Asia/Jakarta", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }) : "?";
+      return `*#${f.id}* ${f.subject}: ${f.status}${f.reason ? ` _(${f.reason})_` : ""} [${when}]`;
+    });
+    return sendText(chatId, `📌 *FAKTA TERPELAJAR (${list.length})*\n\n${lines.join("\n")}\n\n_Hapus: /fact-del <id>_`, msg);
+  }
+  if (cmd === "/fact-del") {
+    if (!boss) return sendText(chatId, "❌ Boss only.", msg);
+    const id = parseInt(argText, 10);
+    if (!id) return sendText(chatId, "Format: /fact-del <id> (liat /facts)", msg);
+    return sendText(chatId, qaLearning.deleteFact(id) ? `🗑️ Fakta #${id} dihapus.` : `❌ #${id} gak ada.`, msg);
+  }
+
   if (cmd === "/skills") {
     const list = skills.listSkills(50);
     if (!list.length) return sendText(chatId, "🛠️ Belum ada skill. Bot bikin sendiri pas ada prosedur berulang, atau ajarin: \"kalau aku minta X, lakuin langkah A,B,C\".", msg);
@@ -1593,6 +1611,7 @@ async function registerCommands() {
   } catch (err) { console.error("updater start:", err.message); }
 
   startProfileGenerator();
+  qaLearning.startQaLearner();
   userProfiles.startUserProfileGenerator();
   backupMod.startBackupScheduler();
   plugins.load();
