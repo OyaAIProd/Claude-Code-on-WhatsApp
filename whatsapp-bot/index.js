@@ -1095,11 +1095,11 @@ async function handleCommand(chatId, senderJid, text, isGroup, msg) {
     if (!argText) return sendText(chatId, "Format: /lokasi <nama orang>\nContoh: /lokasi kep johan", msg);
     const loc = locations.latestForName(argText, chatId) || locations.latestForName(argText, null);
     if (!loc) return sendText(chatId, `📍 Belum ada share lokasi dari "${argText}".`, msg);
-    const near = locations.nearestWaypoint(loc.lat, loc.lng);
     const expired = locations.isExpired(loc);
     const when = new Date(loc.ts * 1000).toLocaleString("en-GB", { timeZone: "Asia/Jakarta", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false });
+    const phrase = locations.movementPhrase(locations.movementAnalysis(locations.getTrack(loc.sender_jid, loc.chat_id, 8)));
     await sendLocation(chatId, loc.lat, loc.lng, loc.sender_name, msg);
-    return sendText(chatId, `📍 *${loc.sender_name}*\n${loc.is_live ? (expired ? "live (sudah expired)" : "live (aktif)") : "pin"} · ${when} WIB${near ? `\nTerdekat: *${near.waypoint.name}* (~${near.distanceKm.toFixed(1)} km)` : ""}${expired ? "\n_⚠️ ini titik terakhir, bukan posisi live sekarang_" : ""}`, msg);
+    return sendText(chatId, `📍 *${loc.sender_name}*\n${loc.is_live ? (expired ? "live (sudah expired)" : "live (aktif)") : "pin"} · ${when} WIB${phrase ? `\n🧭 ${phrase}` : ""}${expired ? "\n_⚠️ ini titik terakhir, bukan posisi live sekarang_" : ""}`, msg);
   }
 
   if (cmd === "/titik") {

@@ -114,6 +114,49 @@ function recentLocations(chatId = null, limit = 50) {
   } catch { return []; }
 }
 
+// Last N points of one person (oldest→newest) for direction reasoning.
+function getTrack(jid, chatId = null, limit = 8) {
+  try {
+    const rows = db.prepare(`SELECT lat,lng,ts FROM locations WHERE sender_jid=? ${chatId ? "AND chat_id=?" : ""} ORDER BY ts DESC LIMIT ?`).all(...(chatId ? [jid, chatId, limit] : [jid, limit]));
+    return rows.reverse();
+  } catch { return []; }
+}
+
+const ARRIVE_KM = parseFloat(process.env.WAYPOINT_ARRIVE_KM || "0.4");
+
+// Where is he + heading? Compare current vs oldest point in window against named waypoints.
+function movementAnalysis(points) {
+  if (!points || !points.length) return null;
+  const cur = points[points.length - 1];
+  const nearest = nearestWaypoint(cur.lat, cur.lng);
+  const out = { current: cur, nearest, arrived: null, approaching: null, leaving: null, moved: false };
+  if (nearest && nearest.distanceKm <= ARRIVE_KM) out.arrived = nearest.waypoint;
+  if (points.length >= 2) {
+    const ref = points[0];
+    out.moved = haversineKm(ref.lat, ref.lng, cur.lat, cur.lng) > 0.2;
+    if (out.moved && !out.arrived) {
+      let appDelta = -0.2, leaveDelta = 0.2;
+      for (const w of listWaypoints()) {
+        const dNow = haversineKm(cur.lat, cur.lng, w.lat, w.lng);
+        const dRef = haversineKm(ref.lat, ref.lng, w.lat, w.lng);
+        const delta = dNow - dRef;            // <0 mendekat, >0 menjauh
+        if (delta < appDelta) { appDelta = delta; out.approaching = w; }
+        if (delta > leaveDelta && dRef < 6) { leaveDelta = delta; out.leaving = w; }
+      }
+    }
+  }
+  return out;
+}
+
+function movementPhrase(a) {
+  if (!a) return "";
+  if (a.arrived) return `sudah sampai/berada di ${a.arrived.name}`;
+  if (a.leaving && a.approaching && a.leaving.name !== a.approaching.name) return `habis dari ${a.leaving.name}, lagi menuju ${a.approaching.name}`;
+  if (a.approaching) return `lagi menuju ${a.approaching.name}`;
+  if (a.nearest) return `${a.moved ? "bergerak, " : ""}dekat ${a.nearest.waypoint.name} (~${a.nearest.distanceKm.toFixed(1)} km)`;
+  return "";
+}
+
 function fmtWIB(ts) {
   try { return new Date(ts * 1000).toLocaleString("en-GB", { timeZone: "Asia/Jakarta", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }); }
   catch { return "?"; }
@@ -130,12 +173,18 @@ function buildLocationContext(loc) {
   s += `• Tipe: ${loc.is_live ? "live" : "pin"}${loc.is_live ? (expired ? " (SUDAH EXPIRED)" : " (masih aktif)") : ""}\n`;
   s += `• Waktu: ${fmtWIB(loc.ts)} WIB (${ageH < 1 ? "barusan" : ageH < 18 ? Math.round(ageH) + " jam lalu" : Math.round(ageH / 24) + " hari lalu"})\n`;
   if (near) s += `• Titik terdekat: ${near.waypoint.name} (~${near.distanceKm.toFixed(1)} km)\n`;
-  s += `Cara jawab: sebut posisi terakhir + waktu + titik terdekat. Kalau live EXPIRED, bilang "ini titik terakhir per [waktu], bukan posisi live sekarang". Kalau ada info lebih baru di chat (mis caption "otw X"), pakai itu.\n`;
+  try {
+    const track = getTrack(loc.sender_jid, loc.chat_id, 8);
+    const phrase = movementPhrase(movementAnalysis(track));
+    if (phrase) s += `• Pergerakan: ${phrase}\n`;
+  } catch {}
+  s += `Cara jawab: sebut posisi (pakai "Pergerakan" di atas: lagi dimana + menuju kemana) + waktu. Kalau live EXPIRED, bilang "ini titik terakhir per [waktu], bukan posisi live sekarang". Kalau ada info lebih baru di chat (mis caption "otw X"), pakai itu.\n`;
   s += `Kalau user minta dikirimin lokasinya, akhiri output dengan marker: [SEND_LOCATION: ${loc.lat},${loc.lng} | ${loc.sender_name || "lokasi"}]\n`;
   return s;
 }
 
 module.exports = {
   saveLocation, latestForName, latestForJid, isExpired, haversineKm, nearestWaypoint,
-  addWaypoint, listWaypoints, deleteWaypoint, recentLocations, buildLocationContext, norm
+  addWaypoint, listWaypoints, deleteWaypoint, recentLocations, buildLocationContext, norm,
+  getTrack, movementAnalysis, movementPhrase
 };
