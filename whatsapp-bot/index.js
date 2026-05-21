@@ -1050,6 +1050,19 @@ async function handleCommand(chatId, senderJid, text, isGroup, msg) {
   if (cmd === "/voice") {
     const arg = argText.toLowerCase();
     const ready = tts.isAvailable();
+    if (arg === "test") {
+      if (!ready) return sendText(chatId, "❌ Model TTS belum di-download.\nJalankan: `node tts/supertonic/download-model.mjs`", msg);
+      await sendText(chatId, "🔊 _tes synth..._", msg);
+      try {
+        const t0 = Date.now();
+        const v = await tts.synthesize("Tes suara. Satu, dua, tiga. Kalau kamu dengar ini, voice note jalan.", { lang: "id" });
+        if (!v) return sendText(chatId, "⚠️ synth return null (teks kosong?).", msg);
+        await sendVoice(chatId, v.path, v.isOpus, msg);
+        return sendText(chatId, `✅ TTS OK\nformat: ${v.isOpus ? "opus (voice note)" : "WAV (ffmpeg gak ada)"}\ndurasi: ${v.durationSec.toFixed(1)}s · ${((Date.now() - t0) / 1000).toFixed(1)}s synth`, msg);
+      } catch (e) {
+        return sendText(chatId, `❌ TTS GAGAL:\n\`${(e.message || String(e)).slice(0, 300)}\`\n\n_${(e.stack || "").split("\n").slice(1, 3).join(" | ").slice(0, 300)}_`, msg);
+      }
+    }
     if (arg !== "on" && arg !== "off") {
       const cur = getChatConfig(chatId).voice_mode ? "ON" : "OFF";
       return sendText(chatId, `🔊 Voice mode: *${cur}*${ready ? "" : "\n⚠️ Model TTS belum di-download (jalankan: node tts/supertonic/download-model.mjs)"}\n\n/voice on — semua balasan + voice note\n/voice off — teks aja\n_Voice note auto-aktif kalau lo kirim voice (walau mode off)._`, msg);
@@ -1155,7 +1168,10 @@ async function processUserMessage(chatId, userText, quotedMsg, isGroup, senderJi
         const v = await tts.synthesize(clean, { lang: ttsLang });
         if (v) await sendVoice(chatId, v.path, v.isOpus, quotedMsg);
       }
-    } catch (e) { console.error("[TTS] synth:", e.message); }
+    } catch (e) {
+      console.error("[TTS] synth:", e.message);
+      await sendText(chatId, `⚠️ _voice gagal: ${(e.message || String(e)).slice(0, 160)}_`, quotedMsg).catch(() => {});
+    }
     finally { await sock.sendPresenceUpdate("paused", chatId).catch(() => {}); }
   }
 }
