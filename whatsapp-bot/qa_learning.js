@@ -125,14 +125,27 @@ function setWatermark(chatId, ts) {
   try { db.prepare("INSERT INTO qa_watermark (chat_id, last_ts) VALUES (?,?) ON CONFLICT(chat_id) DO UPDATE SET last_ts=excluded.last_ts").run(chatId, ts); } catch {}
 }
 
+const MAX_FACT_AGE_DAYS = parseInt(process.env.QA_FACT_MAX_AGE_DAYS || "21", 10);
+const TRANSIENT_RE = /(stuck|macet|belum|nunggu|tunggu|tertunda|delay|rusak|antri|antre|proses|sedang|lagi |menunggu|pending|tertahan|terjebak|telat|terlambat)/i;
+
+function relAge(ts) {
+  if (!ts) return "?";
+  const h = (Date.now() / 1000 - ts) / 3600;
+  if (h < 1) return "barusan";
+  if (h < 18) return `${Math.round(h)} jam lalu`;
+  if (h < 42) return "kemarin";
+  return `${Math.round(h / 24)} hari lalu`;
+}
+
 function searchFacts(chatId, queryText, limit = 3) {
   const q = escapeFts(queryText);
   if (!q) return [];
   try {
+    const minTs = Math.floor(Date.now() / 1000) - MAX_FACT_AGE_DAYS * 86400;
     return db.prepare(`SELECT f.subject, f.status, f.reason, f.fact_ts, f.chat_name, qa_facts_fts.rank AS score
       FROM qa_facts_fts JOIN qa_facts f ON f.id = qa_facts_fts.rowid
-      WHERE qa_facts_fts MATCH ? AND f.chat_id=?
-      ORDER BY qa_facts_fts.rank LIMIT ?`).all(q, chatId, limit);
+      WHERE qa_facts_fts MATCH ? AND f.chat_id=? AND f.fact_ts >= ?
+      ORDER BY qa_facts_fts.rank LIMIT ?`).all(q, chatId, minTs, limit);
   } catch (err) { console.error("[QA] search:", err.message); return []; }
 }
 
@@ -140,9 +153,17 @@ function buildFactContext(facts) {
   if (!facts.length) return "";
   const lines = facts.map(f => {
     const when = f.fact_ts ? new Date(f.fact_ts * 1000).toLocaleString("en-GB", { timeZone: "Asia/Jakarta", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }) : "?";
-    return `• ${f.subject}: ${f.status}${f.reason ? ` (alasan: ${f.reason})` : ""} [per ${when} WIB]`;
+    const ageH = f.fact_ts ? (Date.now() / 1000 - f.fact_ts) / 3600 : 0;
+    const transient = TRANSIENT_RE.test(`${f.subject} ${f.status}`);
+    const stale = transient && ageH > 18 ? " ⚠️KADALUARSA?" : "";
+    return `• ${f.subject}: ${f.status}${f.reason ? ` (alasan: ${f.reason})` : ""} [${relAge(f.fact_ts)}, ${when} WIB]${stale}`;
   });
-  return `\n\n📌 FAKTA TERPELAJAR (dari tanya-jawab orang di grup; pakai untuk jawab, sebut alasan + waktunya. Fakta bisa berubah — kalau ada info lebih baru di context, pakai yang terbaru):\n${lines.join("\n")}\n`;
+  return `\n\n📌 FAKTA TERPELAJAR (dari tanya-jawab orang di grup):
+${lines.join("\n")}
+ATURAN PAKAI FAKTA:
+- Jawab pakai fakta + sebut alasan + KAPAN (mis "per kemarin...").
+- Fakta bertanda ⚠️KADALUARSA? = keadaan SEMENTARA yang udah lewat >18 jam (mis "kapal stuck", "belum datang"). Anggap KEMUNGKINAN sudah selesai/berubah sekarang. Jawab gini: "Per [waktu] [status], tapi itu udah [lama] — kemungkinan sekarang udah beres, kecuali ada update terbaru." JANGAN klaim masih berlaku.
+- Kalau ada info LEBIH BARU di RECENT CONVERSATION, itu menang atas fakta lama.\n`;
 }
 
 function listFacts(chatId, limit = 30) {
