@@ -95,6 +95,7 @@ File masuk chat auto di-download bot ke disk + extracted text (PDF/DOCX/XLSX/PPT
 - Baca isi: Read tool ke PATH, atau pakai cache di <PATH>.extracted.txt
 - Modify: Edit/Write ke PATH yang sama atau buat versi baru
 - Kirim file: include marker [ATTACH_FILE: /full/path/file.pdf] di output. Bisa multiple. Custom name: [ATTACH_FILE: /path/file.pdf | nama.pdf]
+- KIRIM MEDIA LAMA: kalau user minta "kirimin foto/video/file X" (yang udah pernah dikirim orang) → ambil PATH-nya dari section IMAGE MATCHES / MEMORI ENTITAS / search media, lalu emit [ATTACH_FILE: <PATH>]. Jangan bilang "gak bisa kirim" — kalau PATH ada, kirim. Kalau gak nemu PATH, cari via Glob/Grep di folder data/files dulu.
 
 ⚠️ GENERATING NATIVE FILES (PDF/DOCX/XLSX/PPTX) — JANGAN HTML DI-RENAME!
 Bot punya Node libs siap pakai di whatsapp-bot/node_modules. Save output ke /tmp atau data/files/generated/. Selalu pakai Bash spawn node:
@@ -395,7 +396,7 @@ function describeTool(name, input) {
   return `🔧 ${name}`;
 }
 
-const WATCHDOG_MS = parseInt(process.env.CLAUDE_WATCHDOG_MS || "120000", 10);
+const WATCHDOG_MS = parseInt(process.env.CLAUDE_WATCHDOG_MS || "300000", 10);  // 5min — long tools (PDF/build) need slack
 
 function runClaudeOnce(args, cwd) {
   return new Promise((resolve, reject) => {
@@ -624,13 +625,18 @@ async function streamMessage(userText, chatId, contextMessages = [], isGroup = f
 
   if (safeMode) systemPrompt += SAFE_MODE_APPEND;
 
+  // Pass the (large) system prompt via a FILE, not a CLI arg — long prompts + long user text
+  // overflow the Windows command-line limit (~32k) and the spawn fails as "exit 1: no output".
+  const promptFile = path.join(os.tmpdir(), `wasp_sp_${crypto.randomBytes(6).toString("hex")}.txt`);
+  try { fs.writeFileSync(promptFile, systemPrompt, "utf8"); } catch (e) { console.error("sysprompt file:", e.message); }
+
   const baseArgs = [
     "--print",
     "--output-format", "stream-json",
     "--verbose",
     "--model", model,
     "--permission-mode", permMode,
-    "--append-system-prompt", systemPrompt,
+    "--append-system-prompt-file", promptFile,
     "--add-dir", cwd
   ];
   const effort = cfg?.effort || process.env.CLAUDE_DEFAULT_EFFORT || null;
@@ -642,46 +648,59 @@ async function streamMessage(userText, chatId, contextMessages = [], isGroup = f
   let lastErr = "no output";
   let lastCode = -1;
 
-  for (let attempt = 0; attempt < 3; attempt++) {
-    if (!sessionId) sessionId = crypto.randomUUID();
-    const args = [...baseArgs];
-    if (useEffort) args.push("--effort", effort);
-    if (useResume) args.push("--resume", sessionId);
-    else args.push("--session-id", sessionId);
-    args.push(userText);
+  try {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (!sessionId) sessionId = crypto.randomUUID();
+      const args = [...baseArgs];
+      if (useEffort) args.push("--effort", effort);
+      if (useResume) args.push("--resume", sessionId);
+      else args.push("--session-id", sessionId);
+      args.push(userText);
 
-    console.error(`[claude attempt ${attempt + 1}] model=${model} effort=${useEffort ? effort : "none"} session=${useResume ? "resume" : "new"} cwd=${cwd}`);
-    const { code, finalText, cost, duration, err, events } = await runClaudeOnce(args, cwd);
-    for (const evt of events) dispatchEvent(evt, onEvent);
-    lastErr = err || "";
-    lastCode = code;
+      console.error(`[claude attempt ${attempt + 1}] model=${model} effort=${useEffort ? effort : "none"} session=${useResume ? "resume" : "new"} cwd=${cwd}`);
+      const { code, finalText, cost, duration, err, events } = await runClaudeOnce(args, cwd);
+      for (const evt of events) dispatchEvent(evt, onEvent);
+      lastErr = err || "";
+      lastCode = code;
 
-    if (code === 0 && finalText) {
-      setChatConfig(chatId, { claude_session_id: sessionId });
-      ensureSession(chatId, sessionId);
-      touchSession(chatId, sessionId);
-      if (senderJid && cost > 0) budgets.consumeBudget(senderJid, cost);
-      return { text: finalText, cost, duration, model, sessionId, cwd };
+      if (code === 0 && finalText) {
+        setChatConfig(chatId, { claude_session_id: sessionId });
+        ensureSession(chatId, sessionId);
+        touchSession(chatId, sessionId);
+        if (senderJid && cost > 0) budgets.consumeBudget(senderJid, cost);
+        return { text: finalText, cost, duration, model, sessionId, cwd };
+      }
+
+      if (useResume && /No conversation found|session.*not.*found|invalid.*session/i.test(err)) {
+        console.error(`[chat ${chatId}] session expired, retry new`);
+        dropSession(chatId);
+        sessionId = null;
+        useResume = false;
+        continue;
+      }
+
+      if (useEffort && (code !== 0 || !finalText)) {
+        console.error(`[chat ${chatId}] retry without --effort (err: ${(err || "no output").slice(0, 150)})`);
+        useEffort = false;
+        continue;
+      }
+
+      // exit≠0 with no output on a resumed session: the session may be corrupt → one fresh-session retry.
+      if (useResume && code !== 0 && !finalText) {
+        console.error(`[chat ${chatId}] exit ${code} no output on resume — retry fresh session`);
+        dropSession(chatId);
+        sessionId = null;
+        useResume = false;
+        continue;
+      }
+
+      if (code === 0 && !finalText) {
+        throw new Error(`Claude balas kosong (exit 0, no result). stderr: ${(err || "(empty)").slice(0, 200)}`);
+      }
+      break;
     }
-
-    if (useResume && /No conversation found|session.*not.*found|invalid.*session/i.test(err)) {
-      console.error(`[chat ${chatId}] session expired, retry new`);
-      dropSession(chatId);
-      sessionId = null;
-      useResume = false;
-      continue;
-    }
-
-    if (useEffort && (code !== 0 || !finalText)) {
-      console.error(`[chat ${chatId}] retry without --effort (err: ${(err || "no output").slice(0, 150)})`);
-      useEffort = false;
-      continue;
-    }
-
-    if (code === 0 && !finalText) {
-      throw new Error(`Claude balas kosong (exit 0, no result). stderr: ${(err || "(empty)").slice(0, 200)}`);
-    }
-    break;
+  } finally {
+    try { fs.unlinkSync(promptFile); } catch {}
   }
   throw new Error(`Claude CLI exit ${lastCode}: ${(lastErr || "no output").slice(0, 400)}`);
 }
