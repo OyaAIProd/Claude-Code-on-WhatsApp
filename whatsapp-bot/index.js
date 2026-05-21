@@ -35,6 +35,7 @@ const userProfiles = require("./user_profiles");
 const scheduler = require("./scheduler");
 const pii = require("./pii");
 const vision = require("./vision");
+const entities = require("./entities");
 const persona = require("./persona");
 const plugins = require("./plugins");
 const workflows = require("./workflows");
@@ -1038,6 +1039,27 @@ async function processUserMessage(chatId, userText, quotedMsg, isGroup, senderJi
   }
 }
 
+// Caption present -> learn entity (caption authoritative). Captionless -> try to recognize a
+// known object by visual features; returns a short inference tag to append to the description.
+async function learnImageEntities(chatId, caption, visionDesc, imagePath, ts) {
+  try {
+    if (caption && caption.trim()) {
+      const { entities: ents, location } = await entities.extractFromCaption(caption);
+      for (const e of ents) {
+        entities.upsertEntity(chatId, { name: e.name, kind: e.kind, features: visionDesc, location, ts, imagePath });
+      }
+      return null;
+    }
+    const m = entities.matchByFeatures(chatId, visionDesc);
+    if (m) {
+      entities.upsertEntity(chatId, { name: m.entity.name, kind: m.entity.kind, features: "", location: null, ts, imagePath });
+      const loc = m.entity.last_location ? ` — terakhir di ${m.entity.last_location}` : "";
+      return `\n[kemungkinan: ${m.entity.name}${loc}]`;
+    }
+    return null;
+  } catch (err) { console.error("learnImageEntities:", err.message); return null; }
+}
+
 async function handleMessage(m) {
   const msg = m.messages?.[0];
   if (!msg || !msg.message) return;
@@ -1094,8 +1116,10 @@ async function handleMessage(m) {
           if (process.env.GROQ_API_KEY) {
             (async () => {
               try {
-                const desc = await vision.describeImage(mediaInfo.path, { mimetype: mediaInfo.mimetype });
+                let desc = await vision.describeImage(mediaInfo.path, { mimetype: mediaInfo.mimetype, caption: mediaInfo.caption });
                 if (desc) {
+                  const annot = await learnImageEntities(chatId, mediaInfo.caption, desc, mediaInfo.path, msg.messageTimestamp);
+                  if (annot) desc += annot;
                   mediaInfo.visionDesc = desc;
                   db.prepare("UPDATE messages SET vision_desc=? WHERE message_id=?").run(desc, msg.key.id);
                   console.log(`[VISION-SILENT] ${mediaInfo.filename}: ${desc.slice(0, 80)}`);
@@ -1130,8 +1154,10 @@ async function handleMessage(m) {
           summary += `\n✅ Extract OK (${mediaInfo.extraction.length} char)`;
         } else if (isImage && process.env.GROQ_API_KEY) {
           try {
-            const desc = await vision.describeImage(mediaInfo.path, { mimetype: mediaInfo.mimetype });
+            let desc = await vision.describeImage(mediaInfo.path, { mimetype: mediaInfo.mimetype, caption: mediaInfo.caption });
             if (desc) {
+              const annot = await learnImageEntities(chatId, mediaInfo.caption, desc, mediaInfo.path, msg.messageTimestamp);
+              if (annot) desc += annot;
               mediaInfo.visionDesc = desc;
               db.prepare("UPDATE messages SET vision_desc=? WHERE message_id=?").run(desc, msg.key.id);
               summary += `\n👁️ ${desc.slice(0, 200)}`;

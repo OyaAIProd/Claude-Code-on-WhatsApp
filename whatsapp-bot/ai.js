@@ -13,6 +13,7 @@ const translateMod = require("./translate");
 const { isBoss } = require("./bosses");
 const knowledge = require("./knowledge");
 const buttonsMod = require("./buttons");
+const entities = require("./entities");
 const i18n = require("./i18n");
 
 const CLAUDE_BIN = process.env.CLAUDE_BIN || "claude";
@@ -46,6 +47,15 @@ User nanya sesuatu → JANGAN langsung balik nanya "maksud kamu apa?" / "file ma
 JANGAN jawab "gak ada daftar". SCAN seluruh RECENT CONVERSATION + CROSS-CHAT SEARCH RESULTS, KUMPULIN sendiri tiap entri yang cocok, lalu SUSUN jadi daftar bullet. Contoh: user "tadi kep siapa yang berangkat?" → baca semua pesan, kumpulin nama yang ada kata berangkat/pergi/jalan → "Yang berangkat: • Kapten Awi (12:17 WIB) • Kapten Rafli (...)". Kalau bener-bener gak ada satu pun di context → "gw cek pesan terakhir gak ada yang nyebut berangkat".
 
 ⏰ JAM: semua timestamp di context = WIB. Lapor ke user pakai jam itu apa adanya, JANGAN konversi/geser. Jam di prefix [HH:MM] = waktu pesan DIKIRIM, bukan otomatis = jam kejadian. Kalau user nyebut jam di teks (mis "berangkat jam 12:17"), pakai jam dari TEKS, bukan dari prefix timestamp.
+
+🔗 JAWABAN BISA DATANG DARI ORANG LAIN & GAK LUGAS — pahami konteks, bukan cuma cocokin kata:
+Pertanyaan sering dijawab oleh orang YANG BEDA dari yang ditanya, dan jawabannya implisit. Lo HARUS hubungkan pertanyaan dengan pesan-pesan SETELAHNYA walau pengirim beda & gak nyebut ulang subjeknya.
+Contoh: A tanya "kenapa kep Awi berangkat malam?" → B (bukan kep Awi) jawab "tadi truk datang ke gudang jam 9-an pak, jadi nambah angkut, jadinya jam 12 berangkat". → Itu JAWABANNYA. Simpulkan: "Kep Awi berangkat malam karena truk telat datang (jam 9) jadi ada tambahan muat, berangkat jam 12." JANGAN bilang "belum ada yang jawab". Kalau emang gak ada pesan yang nyambung sama sekali, baru bilang belum terjawab.
+
+🖼️ FOTO & ENTITAS VISUAL:
+- Caption foto = PRIORITAS (kebenaran). Deskripsi visual = pendukung.
+- Section "MEMORI ENTITAS VISUAL" kasih lo objek/orang/lokasi yang dikenal bot dari foto+caption lama. Pakai untuk jawab "X dimana / X gimana / X udah sampai?".
+- Kalau deskripsi foto ada tag "[kemungkinan: X]" → itu TEBAKAN dari pencocokan visual (foto tanpa caption), sebut sebagai dugaan: "kemungkinan ini kapal kep Awi". Jangan klaim pasti.
 
 ⚖️ KAPAN BOLEH NANYA: cuma kalau (a) ada 2+ tafsiran yang dampaknya beda jauh & gak bisa ditebak dari context, atau (b) aksi destruktif/irreversible (hapus, kirim ke orang lain, bayar). Selain itu: KERJAIN, jangan nanya.
 
@@ -483,6 +493,17 @@ async function streamMessage(userText, chatId, contextMessages = [], isGroup = f
       }
     } catch {}
   }
+
+  // Inject visual-entity memory only when the query names a known entity (precise + token-cheap).
+  try {
+    const ents = entities.getRelevantEntities(chatId, userText, 5);
+    const nk = entities.nameKey(userText);
+    const named = ents.filter(e => e.name_key && nk.includes(e.name_key));
+    if (named.length) {
+      systemPrompt += entities.buildEntityContext(named);
+      onEvent({ type: "tool_use", name: "entity", input: {}, label: `🧩 ${named.length} entitas` });
+    }
+  } catch {}
 
   if (rag.shouldDoRagSearch(userText)) {
     const ftsMatches = rag.searchAllMessages(userText, { limit: 5 });
