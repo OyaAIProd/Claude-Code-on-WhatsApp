@@ -134,6 +134,10 @@ function isMentionedBot(mentions /* botUserJid arg ignored, uses globals */) {
 }
 function isReplyToBot(quoted) {
   if (!quoted) return false;
+  // Robust: quoted message is one the bot itself sent (stored from_me=1) — works regardless of @lid.
+  if (quoted.id) {
+    try { const row = db.prepare("SELECT from_me FROM messages WHERE message_id=?").get(quoted.id); if (row && row.from_me === 1) return true; } catch {}
+  }
   const nums = botNumbers();
   if (!nums.length) return false;
   const qSender = String(quoted.sender || "").split(":")[0].split("@")[0];
@@ -1187,11 +1191,18 @@ async function processUserMessage(chatId, userText, quotedMsg, isGroup, senderJi
   const meta = showMeta
     ? `\n\n_${result.model}${eff ? "/" + eff : ""} · ${(result.duration / 1000).toFixed(1)}s · $${(result.cost || 0).toFixed(4)}_`
     : "";
+  const cName = await getChatName(chatId).catch(() => chatId);
   for (let i = 0; i < parts.length; i++) {
     const p = parts[i];
     if (!p || !p.trim()) continue;
     const isLast = i === parts.length - 1;
-    await sendText(chatId, isLast ? p + meta : p, quotedMsg);
+    const sent = await sendText(chatId, isLast ? p + meta : p, quotedMsg);
+    // Persist the bot's own reply so replies-to-bot are detectable + the bot remembers what it said.
+    if (sent?.key?.id) {
+      try {
+        saveMessage({ chat_id: chatId, chat_name: cName, is_group: isGroup ? 1 : 0, sender_jid: botJid, sender_name: "BOT", message_id: sent.key.id, text: p, timestamp: Math.floor(Date.now() / 1000), from_me: 1 });
+      } catch {}
+    }
   }
 
   // Voice reply (mirror voice input OR /voice on) — ALWAYS alongside the text above.
