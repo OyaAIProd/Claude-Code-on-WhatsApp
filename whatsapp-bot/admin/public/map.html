@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Peta Lokasi & Titik</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <style>
+    body { margin: 0; font-family: system-ui, sans-serif; }
+    #map { height: 100vh; width: 100%; }
+    #panel { position: absolute; top: 10px; right: 10px; z-index: 1000; background: #fff; padding: 10px 12px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,.25); font-size: 13px; max-width: 240px; }
+    #panel h3 { margin: 0 0 6px; font-size: 14px; }
+    .row { margin: 4px 0; }
+    button { cursor: pointer; border: 0; background: #2563eb; color: #fff; padding: 5px 9px; border-radius: 5px; font-size: 12px; }
+    .muted { color: #666; font-size: 11px; }
+    .legend span { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 4px; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <div id="panel">
+    <h3>🗺️ Peta Lokasi</h3>
+    <div class="row legend"><span style="background:#16a34a"></span>live aktif <span style="background:#9ca3af"></span>expired/pin</div>
+    <div class="row legend"><span style="background:#dc2626"></span>titik (waypoint)</div>
+    <div class="row"><button onclick="load()">🔄 Refresh</button> <span class="muted" id="stat"></span></div>
+    <div class="row muted">Klik di peta untuk tambah titik bernama.</div>
+  </div>
+  <script>
+    const map = L.map('map').setView([-0.5, 103.2], 9);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19, attribution: '© OpenStreetMap'
+    }).addTo(map);
+
+    let layer = L.layerGroup().addTo(map);
+
+    async function load() {
+      try {
+        const r = await fetch('/api/map');
+        if (!r.ok) { document.getElementById('stat').textContent = 'auth/err ' + r.status; return; }
+        const d = await r.json();
+        layer.clearLayers();
+        let bounds = [];
+        (d.waypoints || []).forEach(w => {
+          L.circleMarker([w.lat, w.lng], { radius: 8, color: '#dc2626', fillColor: '#dc2626', fillOpacity: .9 })
+            .bindPopup('📍 <b>' + w.name + '</b><br>' + w.lat + ', ' + w.lng + '<br><button onclick="delWp(\'' + w.name.replace(/'/g, "\\'") + '\')">hapus</button>')
+            .addTo(layer);
+          bounds.push([w.lat, w.lng]);
+        });
+        (d.locations || []).forEach(l => {
+          const col = (l.is_live && !l.expired) ? '#16a34a' : '#9ca3af';
+          const when = new Date(l.ts * 1000).toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' });
+          L.circleMarker([l.lat, l.lng], { radius: 7, color: col, fillColor: col, fillOpacity: .85 })
+            .bindPopup('👤 <b>' + (l.sender || '?') + '</b><br>' + (l.is_live ? (l.expired ? 'live (expired)' : 'live aktif') : 'pin') + '<br>' + when + '<br>' + l.lat.toFixed(5) + ', ' + l.lng.toFixed(5))
+            .addTo(layer);
+          bounds.push([l.lat, l.lng]);
+        });
+        document.getElementById('stat').textContent = (d.locations || []).length + ' lokasi · ' + (d.waypoints || []).length + ' titik';
+        if (bounds.length) map.fitBounds(bounds, { padding: [40, 40], maxZoom: 13 });
+      } catch (e) { document.getElementById('stat').textContent = 'err'; }
+    }
+
+    map.on('click', async (e) => {
+      const name = prompt('Nama titik di ' + e.latlng.lat.toFixed(5) + ', ' + e.latlng.lng.toFixed(5) + ' :');
+      if (!name) return;
+      await fetch('/api/waypoint', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, lat: e.latlng.lat, lng: e.latlng.lng }) });
+      load();
+    });
+
+    async function delWp(name) {
+      if (!confirm('Hapus titik "' + name + '"?')) return;
+      await fetch('/api/waypoint/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
+      load();
+    }
+    window.delWp = delWp;
+
+    load();
+    setInterval(load, 20000);
+  </script>
+</body>
+</html>

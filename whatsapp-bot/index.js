@@ -44,6 +44,7 @@ const skills = require("./skills_mod");
 const qaLearning = require("./qa_learning");
 const tts = require("./tts");
 const video = require("./video");
+const locations = require("./locations");
 const persona = require("./persona");
 const plugins = require("./plugins");
 const workflows = require("./workflows");
@@ -252,6 +253,23 @@ function extractAttachMarkers(text) {
   return { cleaned: cleaned.trim(), files };
 }
 
+async function sendLocation(chatId, lat, lng, name, quotedMsg) {
+  try {
+    return await sock.sendMessage(chatId, { location: { degreesLatitude: lat, degreesLongitude: lng, name: name || "" } }, quotedMsg ? { quoted: quotedMsg } : {});
+  } catch (e) { console.error("sendLocation:", e.message); return null; }
+}
+
+// [SEND_LOCATION: lat,lng | label] -> bot sends a real WhatsApp location pin.
+function extractLocationMarkers(text) {
+  if (!text) return { cleaned: text, locs: [] };
+  const locs = [];
+  const cleaned = text.replace(/\[SEND_LOCATION:\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*(?:\|\s*([^\]]+?))?\]/g, (m, la, ln, nm) => {
+    locs.push({ lat: parseFloat(la), lng: parseFloat(ln), name: (nm || "").trim() });
+    return "";
+  });
+  return { cleaned: cleaned.trim(), locs };
+}
+
 // [LESSON: topik | pelajaran] → simpan pelajaran, hapus marker dari output.
 function extractLessonMarkers(text, chatId) {
   if (!text) return { cleaned: text, count: 0 };
@@ -349,7 +367,7 @@ const BOT_LOCAL_COMMANDS = new Set([
   "/event", "/events", "/ics", "/cal",
   "/ui-lang", "/uilang", "/version", "/update-check",
   "/lessons", "/lesson-del", "/skills", "/skill", "/skill-del", "/voice",
-  "/facts", "/fact-del"
+  "/facts", "/fact-del", "/lokasi", "/titik"
 ]);
 
 async function handleCommand(chatId, senderJid, text, isGroup, msg) {
@@ -374,11 +392,12 @@ async function handleCommand(chatId, senderJid, text, isGroup, msg) {
         admin: `👑 *ADMIN (boss)*\n/boss-add <nomor> • /boss-remove • /list-bosses\n/list-chats — semua chat\n/dm-on|off — bot balas DM\n/listen-on|off — bot dengar group ini\n/users • /userprofile — profil user\n/persona — ganti gaya bot\n/version • /update-check — cek update`,
         button: `🔘 *PILIHAN & PREFERENSI*\n/pilih <n> atau /pick <n> — pilih opsi tombol\n/remembered — preferensi tersimpan\n/forget <pattern> — hapus preferensi`,
         learn: `🧠 *BELAJAR & SKILL*\nBot belajar otomatis dari: (1) koreksi lo, (2) tanya-jawab orang di grup.\n/lessons — pelajaran dari koreksi lo\n/lesson-del <id> — hapus (boss)\n/facts — fakta dari obrolan grup (status + alasan)\n/fact-del <id> — hapus fakta (boss)\n/skills — daftar skill\n/skill <nama> — detail skill\n/skill-del <nama> — hapus skill (boss)`,
-        voice: `🔊 *VOICE / TTS*\nBot bisa bales pakai voice note (suara natural Supertonic).\n/voice on — semua balasan + voice note (tetap ada teks)\n/voice off — teks aja\n_Kirim voice → bot auto-bales voice juga (mirror), walau mode off._\nSetup model sekali: \`node tts/supertonic/download-model.mjs\``
+        voice: `🔊 *VOICE / TTS*\nBot bisa bales pakai voice note (suara natural Supertonic).\n/voice on — semua balasan + voice note (tetap ada teks)\n/voice off — teks aja\n_Kirim voice → bot auto-bales voice juga (mirror), walau mode off._\nSetup model sekali: \`node tts/supertonic/download-model.mjs\``,
+        lokasi: `📍 *LOKASI & PETA*\nKirim share lokasi → bot inget siapa + dimana. Tanya "X dimana / udah sampai mana" → bot jawab + bisa kirim pin.\n/lokasi <nama> — kirim pin lokasi terakhir orang itu\n/titik — daftar titik bernama\n/titik add <nama> <lat> <lng> — tambah titik\n/titik del <nama> — hapus titik\nPeta web (klik tambah titik): http://localhost:${process.env.ADMIN_PORT || "3458"}/map`
       };
       const t = HELP_TOPICS[topic];
       if (t) return sendText(chatId, t, msg);
-      return sendText(chatId, `❓ Topik "${topic}" gak ada.\nTopik: session, setup, rag, file, lang, budget, auto, admin, button, learn, voice`, msg);
+      return sendText(chatId, `❓ Topik "${topic}" gak ada.\nTopik: session, setup, rag, file, lang, budget, auto, admin, button, learn, voice, lokasi`, msg);
     }
     return sendText(chatId,
       `🤖 *Claude Code di WhatsApp*\n\n` +
@@ -397,6 +416,7 @@ async function handleCommand(chatId, senderJid, text, isGroup, msg) {
       `• \`/help button\` — pilihan & preferensi\n` +
       `• \`/help learn\` — belajar dari koreksi + skills\n` +
       `• \`/help voice\` — voice note / TTS\n` +
+      `• \`/help lokasi\` — share lokasi & peta titik\n` +
       `━━━━━━━━━━━━━━\n` +
       `*Sering dipakai:*\n` +
       `/search <kata> • /summarize • /recent • /files\n` +
@@ -1071,6 +1091,38 @@ async function handleCommand(chatId, senderJid, text, isGroup, msg) {
     return sendText(chatId, qaLearning.deleteFact(id) ? `🗑️ Fakta #${id} dihapus.` : `❌ #${id} gak ada.`, msg);
   }
 
+  if (cmd === "/lokasi") {
+    if (!argText) return sendText(chatId, "Format: /lokasi <nama orang>\nContoh: /lokasi kep johan", msg);
+    const loc = locations.latestForName(argText, chatId) || locations.latestForName(argText, null);
+    if (!loc) return sendText(chatId, `📍 Belum ada share lokasi dari "${argText}".`, msg);
+    const near = locations.nearestWaypoint(loc.lat, loc.lng);
+    const expired = locations.isExpired(loc);
+    const when = new Date(loc.ts * 1000).toLocaleString("en-GB", { timeZone: "Asia/Jakarta", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false });
+    await sendLocation(chatId, loc.lat, loc.lng, loc.sender_name, msg);
+    return sendText(chatId, `📍 *${loc.sender_name}*\n${loc.is_live ? (expired ? "live (sudah expired)" : "live (aktif)") : "pin"} · ${when} WIB${near ? `\nTerdekat: *${near.waypoint.name}* (~${near.distanceKm.toFixed(1)} km)` : ""}${expired ? "\n_⚠️ ini titik terakhir, bukan posisi live sekarang_" : ""}`, msg);
+  }
+
+  if (cmd === "/titik") {
+    const sub = (parts[1] || "").toLowerCase();
+    if (sub === "add") {
+      if (!boss) return sendText(chatId, "❌ Boss only.", msg);
+      const m = argText.match(/^add\s+(.+?)\s+(-?\d+(?:\.\d+)?)\s*[, ]\s*(-?\d+(?:\.\d+)?)\s*$/i);
+      if (!m) return sendText(chatId, "Format: /titik add <nama> <lat> <lng>\nContoh: /titik add saka jalan -0.5 103.2\n_Atau klik di peta web admin._", msg);
+      const w = locations.addWaypoint(m[1].trim(), parseFloat(m[2]), parseFloat(m[3]));
+      return sendText(chatId, w ? `✅ Titik *${w.name}* disimpan (${w.lat}, ${w.lng})` : "❌ Gagal simpan titik.", msg);
+    }
+    if (sub === "del") {
+      if (!boss) return sendText(chatId, "❌ Boss only.", msg);
+      const name = argText.replace(/^del\s+/i, "").trim();
+      return sendText(chatId, locations.deleteWaypoint(name) ? `🗑️ Titik "${name}" dihapus.` : `❌ "${name}" gak ada.`, msg);
+    }
+    const list = locations.listWaypoints();
+    const port = process.env.ADMIN_PORT || "3458";
+    if (!list.length) return sendText(chatId, `🗺️ Belum ada titik.\nTambah: /titik add <nama> <lat> <lng>\nAtau klik di peta: http://localhost:${port}/map`, msg);
+    const lines = list.map(w => `• *${w.name}* (${w.lat}, ${w.lng})`);
+    return sendText(chatId, `🗺️ *TITIK (${list.length})*\n\n${lines.join("\n")}\n\nPeta web: http://localhost:${port}/map\n_Tambah: /titik add <nama> <lat> <lng> · Hapus: /titik del <nama>_`, msg);
+  }
+
   if (cmd === "/skills") {
     const list = skills.listSkills(50);
     if (!list.length) return sendText(chatId, "🛠️ Belum ada skill. Bot bikin sendiri pas ada prosedur berulang, atau ajarin: \"kalau aku minta X, lakuin langkah A,B,C\".", msg);
@@ -1162,7 +1214,13 @@ async function processUserMessage(chatId, userText, quotedMsg, isGroup, senderJi
     await sendDocument(chatId, f.path, f.name, "", quotedMsg);
   }
 
-  const { cleaned: afterLesson, count: lessonCount } = extractLessonMarkers(afterAttach, chatId);
+  const { cleaned: afterLoc, locs: sendLocs } = extractLocationMarkers(afterAttach);
+  for (const l of sendLocs) {
+    console.log(`[LOC] sending pin: ${l.lat},${l.lng}`);
+    await sendLocation(chatId, l.lat, l.lng, l.name, quotedMsg);
+  }
+
+  const { cleaned: afterLesson, count: lessonCount } = extractLessonMarkers(afterLoc, chatId);
   if (lessonCount) console.log(`[LESSON] saved ${lessonCount} from ${chatId}`);
   const { cleaned: afterSkill, names: skillNames } = extractSkillMarkers(afterLesson, chatId);
   if (skillNames.length) console.log(`[SKILL] saved: ${skillNames.join(", ")}`);
@@ -1263,6 +1321,29 @@ async function handleMessage(m) {
   const isVoice = isVoiceMessage(msg.message);
   const mediaType = detectMediaType(msg.message);
   const chatName = await getChatName(chatId);
+
+  // Shared location (pin or live). Capture + attribute; silent unless bot is engaged.
+  const locRaw = msg.message?.locationMessage || msg.message?.liveLocationMessage;
+  if (locRaw && !fromMe && typeof locRaw.degreesLatitude === "number") {
+    const isLive = !!msg.message?.liveLocationMessage;
+    try {
+      locations.saveLocation({
+        chat_id: chatId, chat_name: chatName, sender_jid: senderJid, sender_name: senderName,
+        lat: locRaw.degreesLatitude, lng: locRaw.degreesLongitude, place_name: locRaw.name || null,
+        is_live: isLive ? 1 : 0, ts: msg.messageTimestamp
+      });
+      console.log(`[LOC] ${senderName} ${isLive ? "live" : "pin"}: ${locRaw.degreesLatitude},${locRaw.degreesLongitude}`);
+      await reactMsg(chatId, msg.key, "📍");
+      const near = locations.nearestWaypoint(locRaw.degreesLatitude, locRaw.degreesLongitude);
+      saveMessage({
+        chat_id: chatId, chat_name: chatName, is_group: isGroup ? 1 : 0, sender_jid: senderJid, sender_name: senderName,
+        message_id: msg.key.id, text: `[${isLive ? "live location" : "lokasi"}] ${senderName} share lokasi${locRaw.name ? " " + locRaw.name : ""}${near ? ` (dekat ${near.waypoint.name})` : ""}`,
+        timestamp: msg.messageTimestamp, from_me: 0
+      });
+    } catch (err) { console.error("location capture:", err.message); }
+    if (!isMentionedBot(mentions, botJid) && !isReplyToBot(quoted)) return;  // silent unless engaged
+    if (!text) text = `(${senderName} barusan share lokasi)`;
+  }
 
   if (isVoice && !fromMe) {
     try {
@@ -1614,6 +1695,25 @@ async function start() {
 
   sock.ev.on("messages.upsert", (m) => {
     handleMessage(m).catch(err => console.error("handleMessage:", err.message));
+  });
+
+  // Best-effort: live-location coordinate updates arrive as message updates. Attribute by JID.
+  sock.ev.on("messages.update", (updates) => {
+    for (const u of updates || []) {
+      try {
+        const live = u.update?.message?.liveLocationMessage;
+        if (!live || typeof live.degreesLatitude !== "number") continue;
+        const cid = jidNormalizedUser(u.key.remoteJid);
+        const isG = cid.endsWith("@g.us");
+        const sj = jidNormalizedUser(isG ? (u.key.participant || u.key.remoteJid) : u.key.remoteJid);
+        const prev = locations.latestForJid(sj, cid);
+        locations.saveLocation({
+          chat_id: cid, chat_name: prev?.chat_name || "", sender_jid: sj, sender_name: prev?.sender_name || (sj ? sj.split("@")[0] : "?"),
+          lat: live.degreesLatitude, lng: live.degreesLongitude, is_live: 1, ts: Math.floor(Date.now() / 1000)
+        });
+        console.log(`[LOC] live update ${sj}: ${live.degreesLatitude},${live.degreesLongitude}`);
+      } catch {}
+    }
   });
 }
 

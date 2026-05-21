@@ -17,6 +17,7 @@ const entities = require("./entities");
 const learning = require("./learning");
 const skills = require("./skills_mod");
 const qaLearning = require("./qa_learning");
+const locations = require("./locations");
 const i18n = require("./i18n");
 
 const CLAUDE_BIN = process.env.CLAUDE_BIN || "claude";
@@ -607,6 +608,16 @@ async function streamMessage(userText, chatId, contextMessages = [], isGroup = f
         onEvent({ type: "tool_use", name: "qa_facts", input: {}, label: `📌 ${facts.length} fakta` });
       }
     } catch {}
+    // Shared-location recall: when asking where someone is.
+    if (/\b(lokasi|posisi|dimana|di\s?mana|sampai mana|udah sampai|sudah sampai|otw|menuju|berangkat|share\s?lok)\b/i.test(userText)) {
+      try {
+        const loc = locations.latestForName(userText, chatId);
+        if (loc) {
+          systemPrompt += locations.buildLocationContext(loc);
+          onEvent({ type: "tool_use", name: "location", input: {}, label: `📍 lokasi ${loc.sender_name}` });
+        }
+      } catch {}
+    }
   }
 
   if (safeMode) systemPrompt += SAFE_MODE_APPEND;

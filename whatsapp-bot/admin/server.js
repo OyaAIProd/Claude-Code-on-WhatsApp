@@ -7,6 +7,7 @@ const { db } = require("../storage");
 const bosses = require("../bosses");
 const budgets = require("../budgets");
 const audit = require("../audit");
+const locations = require("../locations");
 
 const ENV_PATH = path.join(__dirname, "..", ".env");
 const PORT = parseInt(process.env.ADMIN_PORT || "3458", 10);
@@ -175,6 +176,28 @@ app.get("/api/stats", (req, res) => {
 app.get("/api/audit", (req, res) => {
   const limit = parseInt(req.query.limit, 10) || 100;
   res.json(audit.recent({ limit }));
+});
+
+// ── Map: shared locations + named waypoints ──────────────────────
+app.get("/map", (req, res) => res.sendFile(path.join(__dirname, "public", "map.html")));
+app.get("/api/map", (req, res) => {
+  try {
+    const locs = locations.recentLocations(null, 150).map(l => ({
+      sender: l.sender_name, lat: l.lat, lng: l.lng, is_live: l.is_live, ts: l.ts,
+      expired: locations.isExpired(l), place: l.place_name, chat: l.chat_name
+    }));
+    res.json({ locations: locs, waypoints: locations.listWaypoints() });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.post("/api/waypoint", (req, res) => {
+  const { name, lat, lng } = req.body || {};
+  if (!name || typeof lat !== "number" || typeof lng !== "number") return res.status(400).json({ error: "name, lat, lng required" });
+  const w = locations.addWaypoint(name, lat, lng);
+  res.json(w || { error: "fail" });
+});
+app.post("/api/waypoint/delete", (req, res) => {
+  const { name } = req.body || {};
+  res.json({ ok: locations.deleteWaypoint(name || "") });
 });
 
 app.listen(PORT, () => {
