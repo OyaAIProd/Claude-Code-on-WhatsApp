@@ -59,6 +59,7 @@ const AUTH_DIR = path.join(__dirname, "data", "auth");
 fs.mkdirSync(AUTH_DIR, { recursive: true });
 
 let botJid = null;
+let botLid = null;
 let sock = null;
 const logger = pino({ level: process.env.LOG_LEVEL || "warn" });
 const COOLDOWN_MS = 500;
@@ -110,19 +111,32 @@ function extractQuoted(message) {
   return { id: ctx.stanzaId, sender: ctx.participant || ctx.remoteJid, text: extractText(ctx.quotedMessage) };
 }
 function extractMentions(message) {
-  const ctx = message?.extendedTextMessage?.contextInfo;
+  if (!message) return [];
+  const ctx = message.extendedTextMessage?.contextInfo
+    || message.imageMessage?.contextInfo
+    || message.videoMessage?.contextInfo
+    || message.documentMessage?.contextInfo
+    || message.audioMessage?.contextInfo;
   return ctx?.mentionedJid || [];
 }
-function isMentionedBot(mentions, botUserJid) {
-  if (!botUserJid) return false;
-  const botNum = botUserJid.split(":")[0].split("@")[0];
-  return mentions.some(j => j.startsWith(botNum + "@"));
+function botNumbers() {
+  // Match against both the phone JID and the @lid — group mentions/replies may use either.
+  const nums = [];
+  if (botJid) nums.push(botJid.split(":")[0].split("@")[0]);
+  if (botLid) nums.push(botLid.split(":")[0].split("@")[0]);
+  return nums.filter(Boolean);
 }
-function isReplyToBot(quoted, botUserJid) {
-  if (!quoted || !botUserJid) return false;
-  const botNum = botUserJid.split(":")[0].split("@")[0];
-  const qSender = (quoted.sender || "").split(":")[0];
-  return qSender.startsWith(botNum);
+function isMentionedBot(mentions /* botUserJid arg ignored, uses globals */) {
+  const nums = botNumbers();
+  if (!nums.length || !mentions?.length) return false;
+  return mentions.some(j => { const n = String(j).split(":")[0].split("@")[0]; return nums.includes(n); });
+}
+function isReplyToBot(quoted) {
+  if (!quoted) return false;
+  const nums = botNumbers();
+  if (!nums.length) return false;
+  const qSender = String(quoted.sender || "").split(":")[0].split("@")[0];
+  return nums.includes(qSender);
 }
 
 async function getChatName(chatId) {
@@ -258,9 +272,10 @@ function extractSkillMarkers(text, chatId) {
 }
 
 class ProgressTracker {
-  constructor(chatId, quotedMsg) {
+  constructor(chatId, quotedMsg, silent = false) {
     this.chatId = chatId;
     this.quotedMsg = quotedMsg;
+    this.silent = silent;          // groups: only ⏳ reaction, no tool-step messages
     this.messageKey = null;
     this.steps = [];
     this.lastEdit = 0;
@@ -277,6 +292,7 @@ class ProgressTracker {
     const last = this.steps[this.steps.length - 1];
     if (last === label) return;
     this.steps.push(label);
+    if (this.silent) return;       // track count for meta, but show nothing
     if (!this.messageKey) await this.ensureMessage();
     if (this.steps.length === 1) { await this.doUpdate(); return; }
     this.scheduleUpdate();
@@ -1097,7 +1113,7 @@ async function handleCommand(chatId, senderJid, text, isGroup, msg) {
 }
 
 async function processUserMessage(chatId, userText, quotedMsg, isGroup, senderJid = null, opts = {}) {
-  const tracker = new ProgressTracker(chatId, quotedMsg);
+  const tracker = new ProgressTracker(chatId, quotedMsg, isGroup);
   let result = null;
   // Heuristic safety net: capture obvious teaching/correction even if the model doesn't self-flag.
   try {
@@ -1165,7 +1181,7 @@ async function processUserMessage(chatId, userText, quotedMsg, isGroup, senderJi
 
   const parts = splitLong(clean);
   const usedTools = tracker.steps.length > 0;
-  const showMeta = usedTools || result.duration > 5000 || (result.cost || 0) > 0.001;
+  const showMeta = !isGroup && (usedTools || result.duration > 5000 || (result.cost || 0) > 0.001);
   const eff = getEffort(chatId);
   const meta = showMeta
     ? `\n\n_${result.model}${eff ? "/" + eff : ""} · ${(result.duration / 1000).toFixed(1)}s · $${(result.cost || 0).toFixed(4)}_`
@@ -1541,7 +1557,8 @@ async function start() {
       reconnecting = false;
       reconnectAttempts = 0;
       botJid = sock.user?.id ? jidNormalizedUser(sock.user.id) : null;
-      console.log(`✅ TERHUBUNG: ${botJid || sock.user?.id}`);
+      botLid = sock.user?.lid ? jidNormalizedUser(sock.user.lid) : null;   // group mentions often use @lid
+      console.log(`✅ TERHUBUNG: ${botJid || sock.user?.id}${botLid ? " (lid " + botLid + ")" : ""}`);
       console.log(`👑 Bosses: ${listBosses().length}`);
       console.log(`💬 Bot siap. Kirim pesan ke nomor bot dari HP lo.`);
     }
