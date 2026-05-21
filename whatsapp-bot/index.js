@@ -11,7 +11,8 @@ const {
   useMultiFileAuthState,
   DisconnectReason,
   fetchLatestBaileysVersion,
-  jidNormalizedUser
+  jidNormalizedUser,
+  makeCacheableSignalKeyStore
 } = require("@whiskeysockets/baileys");
 
 const {
@@ -1659,7 +1660,9 @@ async function start() {
   const hasAuth = !!state.creds?.registered;
 
   sock = makeWASocket({
-    version, auth: state, logger,
+    version, logger,
+    // Cacheable signal key store: fewer "Bad MAC" / pending-key decryption failures.
+    auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, logger) },
     printQRInTerminal: false,
     browser: ["Ubuntu", "Chrome", "120.0.0"],
     syncFullHistory: false,
@@ -1668,8 +1671,17 @@ async function start() {
     defaultQueryTimeoutMs: 0,
     keepAliveIntervalMs: 25000,
     retryRequestDelayMs: 2000,
+    maxMsgRetryCount: 5,
     emitOwnEvents: false,
-    generateHighQualityLinkPreview: false
+    generateHighQualityLinkPreview: false,
+    // Lets Baileys answer decryption-retry requests so peers stop "Waiting for this message".
+    getMessage: async (key) => {
+      try {
+        const row = db.prepare("SELECT text FROM messages WHERE message_id=?").get(key.id);
+        if (row && row.text) return { conversation: row.text };
+      } catch {}
+      return undefined;
+    }
   });
 
   sock.ev.on("creds.update", saveCreds);
