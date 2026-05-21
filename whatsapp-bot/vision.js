@@ -56,4 +56,31 @@ async function describeImage(filePath, { mimetype, prompt, caption } = {}) {
   return data.choices?.[0]?.message?.content?.trim() || "";
 }
 
-module.exports = { describeImage };
+// Describe MULTIPLE frames in ONE request (Groq llama-4 = max 5 images). For video: the model
+// sees the sequence -> coherent description across time, 1 call instead of N.
+async function describeImages(filePaths, { prompt, caption } = {}) {
+  if (!GROQ_KEY) throw new Error("GROQ_API_KEY belum diset");
+  const paths = (filePaths || []).slice(0, 5);
+  if (!paths.length) return "";
+  const userPrompt = prompt || (
+`Beberapa gambar di bawah ini adalah CUPLIKAN FRAME (berurutan) dari SATU video. Pahami sebagai satu video utuh, bukan gambar terpisah. Jawab Bahasa Indonesia, terstruktur:
+- ISI VIDEO: apa yang terjadi/diperlihatkan (alur singkat dari frame awal ke akhir)
+- OBJEK/ENTITAS: barang/orang/kendaraan/tempat penting + ciri khas (warna/bentuk/penanda) biar bisa dikenali lagi
+- TEKS: kalau ada tulisan/teks di layar, ekstrak verbatim
+- LATAR/LOKASI: kalau keliatan${caption && caption.trim() ? `
+
+PENTING: caption video dari user: "${caption.trim()}" — ini PRIORITAS, pakai sebagai label utama.` : ""}`
+  );
+  const content = [{ type: "text", text: userPrompt }];
+  for (const p of paths) content.push({ type: "image_url", image_url: { url: imageToDataUri(p) } });
+  const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    method: "POST",
+    headers: { "Authorization": `Bearer ${GROQ_KEY}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ model: VISION_MODEL, messages: [{ role: "user", content }], max_tokens: 900, temperature: 0.2 })
+  });
+  if (!res.ok) { const t = await res.text(); throw new Error(`Groq Vision HTTP ${res.status}: ${t.slice(0, 200)}`); }
+  const data = await res.json();
+  return data.choices?.[0]?.message?.content?.trim() || "";
+}
+
+module.exports = { describeImage, describeImages };

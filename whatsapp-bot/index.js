@@ -43,6 +43,7 @@ const learning = require("./learning");
 const skills = require("./skills_mod");
 const qaLearning = require("./qa_learning");
 const tts = require("./tts");
+const video = require("./video");
 const persona = require("./persona");
 const plugins = require("./plugins");
 const workflows = require("./workflows");
@@ -1272,25 +1273,34 @@ async function handleMessage(m) {
   let fileOnlyMessage = false;
   if (mediaType && !fromMe) {
     const isImage = mediaType === "image";
+    const isVideo = mediaType === "video";
+    const isVisual = isImage || isVideo;
     const hasCaption = !!extractMediaMetaCaption(msg.message, mediaType);
     const mentionedBotEarly = isMentionedBot(mentions, botJid);
     const repliedBotEarly = isReplyToBot(quoted, botJid);
-    const wantsAttention = isImage
+    const wantsAttention = isVisual
       ? (mentionedBotEarly || repliedBotEarly)
       : (hasCaption || mentionedBotEarly || repliedBotEarly);
-    const silentImage = isImage && !wantsAttention;
+    const silentVisual = isVisual && !wantsAttention;
 
-    if (silentImage) {
+    // Produce a text "vision" description for an image or video (frames+audio). Groq, no Claude tokens.
+    const describeMedia = async () => {
+      if (isImage) return vision.describeImage(mediaInfo.path, { mimetype: mediaInfo.mimetype, caption: mediaInfo.caption });
+      if (isVideo) return video.describeVideo(mediaInfo.path, { caption: mediaInfo.caption });
+      return null;
+    };
+
+    if (silentVisual) {
       try {
         mediaInfo = await downloadAndSave(msg, chatName, mediaType, logger);
         if (mediaInfo) {
-          console.log(`[MEDIA-SILENT] image saved: ${mediaInfo.filename} (${(mediaInfo.size / 1024).toFixed(1)}KB)${mediaInfo.caption ? " caption=\"" + mediaInfo.caption.slice(0, 40) + "\"" : ""}`);
+          console.log(`[MEDIA-SILENT] ${mediaType} saved: ${mediaInfo.filename} (${(mediaInfo.size / 1024).toFixed(1)}KB)${mediaInfo.caption ? " caption=\"" + mediaInfo.caption.slice(0, 40) + "\"" : ""}`);
           await reactMsg(chatId, msg.key, "💾");
-          if (!text) text = mediaInfo.caption || `[image: ${mediaInfo.filename}]`;
+          if (!text) text = mediaInfo.caption || `[${mediaType}: ${mediaInfo.filename}]`;
           if (process.env.GROQ_API_KEY) {
             (async () => {
               try {
-                let desc = await vision.describeImage(mediaInfo.path, { mimetype: mediaInfo.mimetype, caption: mediaInfo.caption });
+                let desc = await describeMedia();
                 if (desc) {
                   const annot = await learnImageEntities(chatId, mediaInfo.caption, desc, mediaInfo.path, msg.messageTimestamp);
                   if (annot) desc += annot;
@@ -1302,7 +1312,7 @@ async function handleMessage(m) {
             })();
           }
         }
-      } catch (err) { console.error("silent image:", err.message); }
+      } catch (err) { console.error("silent media:", err.message); }
     } else {
       await sock.sendPresenceUpdate("composing", chatId).catch(() => {});
       const ackMsg = await sendText(chatId, `📥 _menerima file..._`, msg);
@@ -1326,15 +1336,16 @@ async function handleMessage(m) {
           if (meta.lines) metaBits.push(`${meta.lines} baris`);
           if (metaBits.length) summary += ` · ${metaBits.join(", ")}`;
           summary += `\n✅ Extract OK (${mediaInfo.extraction.length} char)`;
-        } else if (isImage && process.env.GROQ_API_KEY) {
+        } else if (isVisual && process.env.GROQ_API_KEY) {
           try {
-            let desc = await vision.describeImage(mediaInfo.path, { mimetype: mediaInfo.mimetype, caption: mediaInfo.caption });
+            if (isVideo && ackMsg?.key) await editText(chatId, ackMsg.key, `${summary}\n🎬 _nonton video..._`);
+            let desc = await describeMedia();
             if (desc) {
               const annot = await learnImageEntities(chatId, mediaInfo.caption, desc, mediaInfo.path, msg.messageTimestamp);
               if (annot) desc += annot;
               mediaInfo.visionDesc = desc;
               db.prepare("UPDATE messages SET vision_desc=? WHERE message_id=?").run(desc, msg.key.id);
-              summary += `\n👁️ ${desc.slice(0, 200)}`;
+              summary += `\n${isVideo ? "🎬" : "👁️"} ${desc.slice(0, 220)}`;
             }
           } catch (err) { console.error("vision desc:", err.message); }
         } else if (mediaType === "document") {

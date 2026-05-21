@@ -139,4 +139,13 @@ async function synthesize(text, { lang = DEFAULT_LANG, voice = DEFAULT_VOICE } =
   return { path: ogg || wavPath, isOpus: !!ogg, wavPath, durationSec: Number(duration[0]) || 0 };
 }
 
-module.exports = { synthesize, isAvailable, cleanForSpeech, DEFAULT_LANG, DEFAULT_VOICE };
+// ffprobe usually sits next to ffmpeg; derive it so video.js can read durations.
+function ffprobeBin() {
+  const f = ffmpegBin();
+  if (!f) return null;
+  if (f === "ffmpeg") return "ffprobe";
+  const cand = f.replace(/ffmpeg(\.exe)?$/i, (m, ext) => "ffprobe" + (ext || ""));
+  return fs.existsSync(cand) ? cand : "ffprobe";
+}
+
+module.exports = { synthesize, isAvailable, cleanForSpeech, DEFAULT_LANG, DEFAULT_VOICE, ffmpegBin, ffprobeBin };
