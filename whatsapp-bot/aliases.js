@@ -52,4 +52,24 @@ function expandTargets(queryText) {
   return [...new Set(out)];
 }
 
-module.exports = { setAlias, listAliases, deleteAlias, expandTargets, norm };
+// Detect a self-introduction and return the introduced name/nickname (else null).
+const BAD_NAME = /^(saya|aku|mau|udah|sudah|lagi|gak|tidak|ini|itu|yang|dari|ke|di|rasa|kira|pikir|setuju|ada|bisa|akan|sih|dong|nih)$/i;
+function clean(s) {
+  let n = String(s || "").replace(/[.,!?;:"'’]+$/g, "").replace(/\s+/g, " ").trim();
+  // keep at most 3 words
+  n = n.split(" ").slice(0, 3).join(" ");
+  return n;
+}
+function detectSelfIntro(text) {
+  const t = String(text || "").trim();
+  if (t.length < 4 || t.length > 200) return null;
+  // explicit intro phrases
+  let m = t.match(/\b(?:nama\s+(?:saya|aku|gw|gue)(?:\s+adalah)?|panggil\s+(?:saya|aku)|biasa\s+dipanggil|perkenalkan(?:,?\s+(?:saya|aku))?|kenalin(?:\s+(?:saya|aku))?|kenalkan(?:\s+(?:saya|aku))?)\s+([\p{L}][\p{L}.'’-]*(?:\s+[\p{L}][\p{L}.'’-]*){0,2})/iu);
+  if (m) { const n = clean(m[1]); if (n && !BAD_NAME.test(n.split(" ")[0])) return n; }
+  // "saya/aku/ini <honorific> X" — honorific = high confidence it's a name
+  m = t.match(/\b(?:saya|aku|ini|sini)\s+((?:kep|kapten|pak|bu|bang|mas|mbak|haji|hj|bos|abang)\s+[\p{L}][\p{L}.'’-]+)/iu);
+  if (m) return clean(m[1]);
+  return null;
+}
+
+module.exports = { setAlias, listAliases, deleteAlias, expandTargets, detectSelfIntro, norm };

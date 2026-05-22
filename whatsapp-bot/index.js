@@ -1569,6 +1569,14 @@ async function handleMessage(m) {
   });
   if (!fromMe) userProfiles.incrementActivity(senderJid, senderName);
 
+  // Auto-learn alias from a self-introduction ("saya kep Agus" → this account = kep Agus).
+  if (!fromMe && text && senderJid) {
+    try {
+      const intro = aliases.detectSelfIntro(text);
+      if (intro) { aliases.setAlias(intro, senderName, senderJid); console.log(`[ALIAS] auto: "${intro}" = ${senderName} (${senderJid.split("@")[0]})`); }
+    } catch {}
+  }
+
   if (!fromMe && text && text.length >= 4 && !text.startsWith("/")) {
     try {
       const tr = await translate.maybeTranslateIncoming(chatId, text);
