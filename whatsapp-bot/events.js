@@ -97,8 +97,12 @@ async function extractFromImage(imagePath, { caption = "", chatId, chatName, sen
     });
     if (id) saved.push({ id, ...ev });
   }
+  // Human-readable summary (used as vision_desc for general recall/FTS).
+  const summary = saved.length
+    ? saved.map(e => `${e.subject_name}${e.action && e.action !== "null" ? " " + e.action : ""}${e.dari || e.ke ? ` ${e.dari || "?"}→${e.ke || "?"}` : ""}${e.via ? " via " + e.via : ""}${e.place ? " @" + e.place : ""}${e.time_on_media ? ` (jam ${e.time_on_media})` : ""}${e.goods_desc ? ` [${e.goods_desc}]` : ""}`).join("; ")
+    : (raw || "").replace(/```json|```/gi, " ").replace(/\s+/g, " ").trim().slice(0, 400);
   if (saved.length) console.log(`[EVENT] +${saved.length} dari foto ${senderName || ""}`);
-  return { events: saved, rawDesc: raw };
+  return { events: saved, rawDesc: raw, summary };
 }
 
 // Timeline of one entity (matches subject OR via), newest first.

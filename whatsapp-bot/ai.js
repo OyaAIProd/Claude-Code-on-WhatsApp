@@ -18,6 +18,7 @@ const learning = require("./learning");
 const skills = require("./skills_mod");
 const qaLearning = require("./qa_learning");
 const locations = require("./locations");
+const trackingEvents = require("./events");
 const i18n = require("./i18n");
 
 const CLAUDE_BIN = process.env.CLAUDE_BIN || "claude";
@@ -609,6 +610,14 @@ async function streamMessage(userText, chatId, contextMessages = [], isGroup = f
       if (facts.length) {
         systemPrompt += qaLearning.buildFactContext(facts);
         onEvent({ type: "tool_use", name: "qa_facts", input: {}, label: `📌 ${facts.length} fakta` });
+      }
+    } catch {}
+    // Structured event timeline (kapal/orang/barang berangkat/sampai) — deterministic STATUS.
+    try {
+      const statusCtx = trackingEvents.buildStatusContext(userText, chatId);
+      if (statusCtx) {
+        systemPrompt += statusCtx;
+        onEvent({ type: "tool_use", name: "events", input: {}, label: `🚢 event timeline` });
       }
     } catch {}
     // Shared-location recall: when asking where someone is.
