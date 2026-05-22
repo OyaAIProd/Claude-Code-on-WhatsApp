@@ -96,16 +96,56 @@ Kalau cuma satu hal, array 1 elemen. Bahasa Indonesia.`;
 
 function num(v) { const n = parseFloat(v); return isFinite(n) ? n : null; }
 
+// Optional Antigravity CLI engine. Inert unless ANTIGRAVITY_BIN is set (it isn't installed yet).
+// When you install it, set in .env: ANTIGRAVITY_BIN=antigravity  (and ANTIGRAVITY_ARGS if flags differ).
+function antigravityDescribe(imagePath, prompt) {
+  return new Promise((resolve) => {
+    const bin = process.env.ANTIGRAVITY_BIN;
+    if (!bin) return resolve("");
+    const { spawn } = require("child_process");
+    const path = require("path"), fs = require("fs"), os = require("os"), crypto = require("crypto");
+    let dir, rel;
+    try {
+      dir = fs.mkdtempSync(path.join(os.tmpdir(), "ag_"));
+      rel = `img_${crypto.randomBytes(4).toString("hex")}${path.extname(imagePath) || ".jpg"}`;
+      fs.copyFileSync(imagePath, path.join(dir, rel));
+    } catch { return resolve(""); }
+    const cleanup = () => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch {} };
+    const safe = String(prompt).replace(/"/g, "'").replace(/[\r\n]+/g, " ");
+    const argsTpl = process.env.ANTIGRAVITY_ARGS || `-p "{prompt} @{file}"`;
+    const cmd = `${bin} ${argsTpl.replace("{prompt}", safe).replace("{file}", rel)}`;
+    let out = "", done = false;
+    const fin = (v) => { if (!done) { done = true; cleanup(); resolve(v); } };
+    try {
+      const p = spawn(cmd, { cwd: dir, env: process.env, shell: true });
+      const to = setTimeout(() => { try { p.kill("SIGKILL"); } catch {} fin(""); }, 120000);
+      p.stdout.on("data", d => { out += d.toString(); });
+      p.on("error", () => { clearTimeout(to); fin(""); });
+      p.on("close", () => { clearTimeout(to); fin(out.trim()); });
+    } catch { fin(""); }
+  });
+}
+
 // Extract structured events from an image. Groq first (fast); Gemini fallback (more accurate).
 async function extractFromImage(imagePath, { caption = "", chatId, chatName, senderName, ts } = {}) {
   const prompt = caption ? `${EXTRACT_PROMPT}\nCAPTION user (PRIORITAS, pakai untuk isi field): "${caption}"` : EXTRACT_PROMPT;
-  let raw = "";
-  // 1) Groq (primary)
-  try { raw = await vision.describeImage(imagePath, { prompt, caption }); } catch (e) { console.error("[EVENT] groq:", e.message); }
-  // 2) Gemini fallback if Groq gave nothing parseable
-  if (parseJsonArray(raw).length === 0 && gemini.available()) {
-    try { const g = await gemini.describe(imagePath, prompt); if (parseJsonArray(g).length) raw = g; } catch (e) { console.error("[EVENT] gemini:", e.message); }
+  // Robust engine chain — try each, use first that returns parseable JSON. One engine's failure
+  // (e.g. Groq 429 limit) never blocks the others.
+  const engines = [
+    { name: "groq", avail: () => true, fn: () => vision.describeImage(imagePath, { prompt, caption }) },
+    { name: "antigravity", avail: () => !!process.env.ANTIGRAVITY_BIN, fn: () => antigravityDescribe(imagePath, prompt) },
+    { name: "gemini", avail: () => gemini.available(), fn: () => gemini.describe(imagePath, prompt) }
+  ];
+  let raw = "", used = "";
+  for (const e of engines) {
+    try {
+      if (!e.avail()) continue;
+      const r = await e.fn();
+      if (r && parseJsonArray(r).length) { raw = r; used = e.name; break; }
+      if (r && !raw) raw = r;             // keep best-effort text even if not JSON
+    } catch (err) { console.error(`[EVENT] ${e.name} gagal:`, err.message); }
   }
+  if (used) console.log(`[EVENT] vision via ${used}`);
   const arr = parseJsonArray(raw);
   const saved = [];
   for (const ev of arr) {

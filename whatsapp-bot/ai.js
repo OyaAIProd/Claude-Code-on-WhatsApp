@@ -583,6 +583,14 @@ async function streamMessage(userText, chatId, contextMessages = [], isGroup = f
       const truncated = merged.map(m => ({ ...m, text: (m.text || m.vision_desc || "").slice(0, 160) }));
       systemPrompt += rag.buildRagContext(truncated);
       onEvent({ type: "tool_use", name: "RAG", input: {}, label: `🔎 RAG: ${ftsMatches.length}txt+${visionMatches.length}img+${semanticMatches.length}sem→${merged.length}` });
+      // Self-correct habit: learn the group where the answer actually came from (so next similar
+      // question searches there). Handles "wrong group -> found elsewhere -> next time look there".
+      try {
+        const counts = {};
+        for (const m of merged) if (m.chat_id && m.chat_id !== chatId) counts[m.chat_id] = (counts[m.chat_id] || 0) + 1;
+        const top = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
+        if (top) habits.recordHabit(userText, top[0], merged.find(m => m.chat_id === top[0])?.chat_name || "");
+      } catch {}
     }
   }
 
