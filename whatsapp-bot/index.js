@@ -66,6 +66,7 @@ fs.mkdirSync(AUTH_DIR, { recursive: true });
 let botJid = null;
 let botLid = null;
 let sock = null;
+const groupCache = new Map();   // group metadata cache — improves group message decryption/sender-keys
 const logger = pino({ level: process.env.LOG_LEVEL || "warn" });
 const COOLDOWN_MS = 500;
 const lastReplyAt = new Map();
@@ -1763,6 +1764,7 @@ async function start() {
     keepAliveIntervalMs: 25000,
     retryRequestDelayMs: 2000,
     maxMsgRetryCount: 5,
+    cachedGroupMetadata: async (jid) => groupCache.get(jid),
     emitOwnEvents: false,
     generateHighQualityLinkPreview: false,
     // Lets Baileys answer decryption-retry requests so peers stop "Waiting for this message".
@@ -1830,6 +1832,12 @@ async function start() {
   sock.ev.on("messages.upsert", (m) => {
     handleMessage(m).catch(err => console.error("handleMessage:", err.message));
   });
+
+  // Keep group metadata cache fresh (helps decrypt group messages reliably).
+  const refreshGroup = async (jid) => { try { if (jid) groupCache.set(jid, await sock.groupMetadata(jid)); } catch {} };
+  sock.ev.on("groups.update", (us) => { for (const u of us || []) refreshGroup(u.id); });
+  sock.ev.on("group-participants.update", (u) => refreshGroup(u.id));
+  sock.ev.on("groups.upsert", (gs) => { for (const g of gs || []) { try { groupCache.set(g.id, g); } catch {} } });
 
   // Best-effort: live-location coordinate updates arrive as message updates. Attribute by JID.
   sock.ev.on("messages.update", (updates) => {
