@@ -1095,10 +1095,27 @@ async function handleCommand(chatId, senderJid, text, isGroup, msg) {
   }
 
   if (cmd === "/habits") {
-    const list = require("./habits").listHabits();
-    if (!list.length) return sendText(chatId, "🎯 Belum ada habit. Ajarin: tanya + sebut grupnya (mis \"lokasi kep awi di grup internal\") → next pertanyaan mirip otomatis cari di situ.", msg);
-    const lines = list.map(h => { let t = []; try { t = JSON.parse(h.topic_tokens); } catch {} return `• ${t.join(" ")} → *${h.target_chat_name || "?"}* (${h.hits}x)`; });
-    return sendText(chatId, `🎯 *HABIT SUMBER (${list.length})*\n\n${lines.join("\n")}\n\n_Otomatis dari kebiasaan: tanya + sebut grup sekali → terpelajar._`, msg);
+    const habits = require("./habits");
+    const sub = (parts[1] || "").toLowerCase();
+    if (sub === "set" || argText.includes("=")) {
+      if (!boss) return sendText(chatId, "❌ Boss only.", msg);
+      const body = argText.replace(/^set\s+/i, "");
+      const eq = body.indexOf("=");
+      if (eq < 0) return sendText(chatId, 'Format: /habits set "<topik>" = <nama grup>\nContoh: /habits set harga = gudang', msg);
+      const topic = body.slice(0, eq).replace(/["']/g, "").trim();
+      const grup = body.slice(eq + 1).trim();
+      const r = habits.setRule(topic, grup);
+      return sendText(chatId, r.error ? `❌ ${r.error}` : `✅ Pertanyaan soal *${r.topic}* → cari di *${r.group}*`, msg);
+    }
+    if (sub === "del") {
+      if (!boss) return sendText(chatId, "❌ Boss only.", msg);
+      const id = parseInt(argText.replace(/^del\s+/i, ""), 10);
+      return sendText(chatId, habits.delHabit(id) ? `🗑️ Habit #${id} dihapus.` : `❌ #${id} gak ada.`, msg);
+    }
+    const list = habits.listHabits();
+    if (!list.length) return sendText(chatId, '🎯 Belum ada habit.\nSet manual: /habits set "<topik>" = <grup>\nOtomatis: tanya + sebut grup (mis "lokasi kep di grup internal").', msg);
+    const lines = list.map(h => { let t = []; try { t = JSON.parse(h.topic_tokens); } catch {} return `*#${h.id}* ${t.join(" ")} → *${h.target_chat_name || "?"}* (${h.hits}x)`; });
+    return sendText(chatId, `🎯 *HABIT SUMBER (${list.length})*\n\n${lines.join("\n")}\n\n_Set: /habits set "<topik>" = <grup> · Hapus: /habits del <id>_`, msg);
   }
   if (cmd === "/senders" || cmd === "/who") {
     const rows = db.prepare("SELECT sender_name, sender_jid, COUNT(*) c, MAX(timestamp) t FROM messages WHERE from_me=0 GROUP BY sender_jid ORDER BY t DESC LIMIT 25").all();

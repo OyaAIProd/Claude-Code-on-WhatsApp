@@ -87,7 +87,23 @@ function findHabit(queryText) {
 }
 
 function listHabits() {
-  try { return db.prepare("SELECT topic_tokens, target_chat_name, hits FROM query_habits ORDER BY hits DESC LIMIT 30").all(); } catch { return []; }
+  try { return db.prepare("SELECT id, topic_tokens, target_chat_name, hits FROM query_habits ORDER BY hits DESC LIMIT 50").all(); } catch { return []; }
 }
 
-module.exports = { recordHabit, findHabit, resolveGroupByName, resolveGroupRef, listHabits, tokens };
+// Explicit rule: "questions about <keyword/topic> -> look in <group>". (boss-defined)
+function setRule(keyword, groupRef) {
+  const toks = tokens(keyword);
+  if (!toks.length) return { error: "topik/keyword kosong" };
+  const g = resolveGroupByName(groupRef) || (/@g\.us$/.test(groupRef || "") ? { chat_id: groupRef, chat_name: groupRef } : null);
+  if (!g) return { error: `grup "${groupRef}" gak ketemu (cek /list-chats)` };
+  try {
+    db.prepare("INSERT INTO query_habits (topic_tokens, target_chat_id, target_chat_name, hits) VALUES (?,?,?,5)")
+      .run(JSON.stringify(toks.slice(0, 12)), g.chat_id, g.chat_name);
+    return { ok: true, topic: toks.join(" "), group: g.chat_name };
+  } catch (err) { return { error: err.message }; }
+}
+function delHabit(id) {
+  try { return db.prepare("DELETE FROM query_habits WHERE id=?").run(id).changes > 0; } catch { return false; }
+}
+
+module.exports = { recordHabit, findHabit, resolveGroupByName, resolveGroupRef, listHabits, setRule, delHabit, tokens };

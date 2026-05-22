@@ -7,6 +7,7 @@ const events = require("./events");
 const learning = require("./learning");
 const qa = require("./qa_learning");
 const skills = require("./skills_mod");
+const habits = require("./habits");
 
 const [, , domain, action, ...a] = process.argv;
 function out(o) { console.log(typeof o === "string" ? o : JSON.stringify(o)); }
@@ -58,6 +59,15 @@ try {
     // ── SKILL ──
     case "skill del": { out({ ok: skills.deleteSkill(a[0]) }); break; }
     case "skill list": { out(skills.listSkills(50).map(s => ({ name: s.name }))); break; }
+
+    // ── HABIT (topik pertanyaan -> grup sumber) ──
+    case "habit set": { // habit set "harga stok" "gudang"
+      const r = habits.setRule(a[0], a[1]);
+      out(r.error ? `ERR: ${r.error}` : { ok: true, topic: r.topic, group: r.group });
+      break;
+    }
+    case "habit del": { out({ ok: habits.delHabit(parseInt(a[0], 10)) }); break; }
+    case "habit list": { out(habits.listHabits().map(h => { let t = []; try { t = JSON.parse(h.topic_tokens); } catch {} return { id: h.id, topic: t.join(" "), group: h.target_chat_name, hits: h.hits }; })); break; }
 
     default:
       out(`ERR: unknown "${domain} ${action}". Domains: alias|titik|rute|lesson|fact|skill. Actions: set/del/list/radius.`);

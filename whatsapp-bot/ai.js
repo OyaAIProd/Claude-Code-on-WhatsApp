@@ -639,7 +639,7 @@ async function streamMessage(userText, chatId, contextMessages = [], isGroup = f
         if (merged.length) {
           const trunc = merged.map(m => ({ ...m, text: (m.text || m.vision_desc || "").slice(0, 160) }));
           systemPrompt += rag.buildRagContext(trunc, `🎯 SUMBER UTAMA — grup "${target.chat_name}" (data jenis ini biasanya di sini; teks+gambar+caption)`);
-          onEvent({ type: "tool_use", name: "habit", input: {}, label: `🎯 ${target.chat_name}` });
+          onEvent({ type: "tool_use", name: "habit", input: {}, label: `🔎 mencari di ${target.chat_name}` });
         }
       }
     } catch {}
@@ -653,6 +653,8 @@ Jalanin: \`cd "${BOT_DIR}" && node manage.js <domain> <action> [args]\` (argumen
   Contoh: user "ganti riky 04 jadi kep Agus" → \`node manage.js alias set "kep Agus" "riky 04"\`
 - titik: \`titik set "<nama>" <lat> <lng> [radius]\` · \`titik radius "<nama>" <km>\` · \`titik del "<nama>"\` · \`titik list\`
 - rute: \`rute set "<nama>" "A>B>C"\` · \`rute del "<nama>"\` · \`rute list\`
+- habit (topik pertanyaan→grup sumber): \`habit set "<topik/keyword>" "<nama grup>"\` · \`habit del <id>\` · \`habit list\`
+  Contoh: user "kalau ada yang tanya soal harga, cari di grup gudang" → \`node manage.js habit set "harga" "gudang"\`
 - lesson list/del <id> · fact list/del <id> · skill list/del "<nama>"
 Setelah eksekusi, cek output-nya lalu KONFIRMASI singkat ke user apa yang berubah. Kalau user minta ubah sistem, LANGSUNG kerjain (jangan nyuruh user ketik slash command).\n`;
   }
