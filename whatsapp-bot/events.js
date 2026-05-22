@@ -118,4 +118,61 @@ function queryTimeline(subjectQuery, { chatId = null, limit = 8 } = {}) {
   } catch (err) { console.error("[EVENT] timeline:", err.message); return []; }
 }
 
-module.exports = { addEvent, extractFromImage, queryTimeline, canon, parseJsonArray, EXTRACT_PROMPT };
+function relAge(ts) {
+  const h = (Date.now() / 1000 - ts) / 3600;
+  if (h < 1) return "barusan";
+  if (h < 18) return `${Math.round(h)} jam lalu`;
+  if (h < 42) return "kemarin";
+  return `${Math.round(h / 24)} hari lalu`;
+}
+function fmtWIB(ts) {
+  try { return new Date(ts * 1000).toLocaleString("en-GB", { timeZone: "Asia/Jakarta", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }); }
+  catch { return "?"; }
+}
+
+// Infer current status from a timeline (oldest→newest), incl arrival (explicit=certain, repeat=probable).
+function inferStatus(timelineDesc) {
+  const ev = [...timelineDesc].sort((a, b) => a.ts - b.ts);
+  if (!ev.length) return null;
+  const dep = [...ev].reverse().find(e => e.action === "berangkat");
+  // explicit arrival after departure
+  const explicitArr = ev.find(e => e.action === "sampai" && (!dep || e.ts >= dep.ts));
+  if (explicitArr) return { kind: "arrived_certain", at: explicitArr.place || explicitArr.ke || (dep && dep.ke), event: explicitArr, dep };
+  if (dep) {
+    // repeat-shipment heuristic: a later event (same via, or goods at destination) after departure
+    const dest = dep.ke;
+    const later = ev.find(e => e.ts > dep.ts && (
+      (dest && (canon(e.place || "") === canon(dest) || canon(e.ke || "") === canon(dest))) ||
+      (e.via_key && dep.via_key && e.via_key === dep.via_key && e.goods_desc)
+    ));
+    if (later) return { kind: "arrived_probable", at: later.place || dest, event: later, dep, reason: "foto/barang terkait muncul lagi setelah berangkat" };
+    return { kind: "in_transit", dep };
+  }
+  return { kind: "seen", event: ev[ev.length - 1] };
+}
+
+// STATUS block injected to Claude (deterministic pre-resolver output).
+function buildStatusContext(subjectQuery, chatId = null) {
+  const tl = queryTimeline(subjectQuery, { chatId, limit: 10 });
+  if (!tl.length) return "";
+  const lines = [...tl].sort((a, b) => a.ts - b.ts).map(e => {
+    const bits = [e.subject_name];
+    if (e.action) bits.push(`*${e.action}*`);
+    if (e.dari || e.ke) bits.push(`${e.dari || "?"}→${e.ke || "?"}`);
+    if (e.via) bits.push(`via ${e.via}`);
+    if (e.place) bits.push(`@${e.place}`);
+    if (e.time_on_media) bits.push(`jam-di-foto:${e.time_on_media}`);
+    return `  - [${fmtWIB(e.ts)} WIB, ${relAge(e.ts)}] ${bits.join(" ")}${e.goods_desc ? ` (${e.goods_desc})` : ""}`;
+  });
+  const st = inferStatus(tl);
+  let hint = "";
+  if (st) {
+    if (st.kind === "arrived_certain") hint = `STATUS: SUDAH SAMPAI di ${st.at || "tujuan"} (eksplisit/pasti).`;
+    else if (st.kind === "arrived_probable") hint = `STATUS: KEMUNGKINAN sudah sampai di ${st.at || "tujuan"} — ${st.reason}. Sebut sebagai dugaan ("kemungkinan sudah sampai, soalnya...").`;
+    else if (st.kind === "in_transit") hint = `STATUS: dalam perjalanan ${st.dep.dari || "?"}→${st.dep.ke || "?"} via ${st.dep.via || "?"} (berangkat ${relAge(st.dep.ts)}). Belum ada konfirmasi sampai.`;
+    else hint = `STATUS: terlihat terakhir; belum ada event berangkat/sampai jelas.`;
+  }
+  return `\n\n🚢 EVENT TIMELINE (dari foto/caption grup — JAWAB dari sini, sebut jam + alasan):\n${lines.join("\n")}\n${hint}\nAturan: pakai jam-di-foto kalau ada (itu waktu kejadian). "kemungkinan" = jangan klaim pasti. Kalau ada info lebih baru di chat, itu menang.\n`;
+}
+
+module.exports = { addEvent, extractFromImage, queryTimeline, canon, parseJsonArray, EXTRACT_PROMPT, inferStatus, buildStatusContext };
