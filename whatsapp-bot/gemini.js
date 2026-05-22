@@ -30,19 +30,16 @@ function parseResetMs(text) {
 
 function runOnce(model, dir, relFile, prompt) {
   return new Promise((resolve) => {
-    // Pass the prompt as an ARG ARRAY (no shell string) so special chars in the long extraction
-    // prompt (< > | [ ] { }) don't break cmd.exe parsing ("syntax error line 1").
-    // Windows: gemini is a .cmd → run via `cmd /c gemini ...`; Node escapes each arg for cmd.
-    const promptArg = `${String(prompt).replace(/[\r\n]+/g, " ")} @${relFile}`;
-    const baseArgs = ["-e", "none", "-y", "-o", "text", "-m", model, "-p", promptArg];
-    const isWin = process.platform === "win32";
-    const spawnCmd = isWin ? (process.env.ComSpec || "cmd.exe") : GEMINI_BIN;
-    const spawnArgs = isWin ? ["/c", GEMINI_BIN, ...baseArgs] : baseArgs;
+    // The long extraction prompt (with < > | [ ] { }) breaks cmd parsing if put on the command
+    // line. Solution: only the file ref goes on the command line (-p "@file", a single token);
+    // the full instructions are piped via STDIN (gemini appends -p to stdin input).
+    const cmd = `${GEMINI_BIN} -e none -y -o text -m ${model} -p "@${relFile}"`;
     let out = "", err = "", done = false;
     const fin = (v) => { if (!done) { done = true; resolve(v); } };
     let proc;
-    try { proc = spawn(spawnCmd, spawnArgs, { cwd: dir, env: process.env }); }   // no shell:true → safe arg escaping
+    try { proc = spawn(cmd, { cwd: dir, env: process.env, shell: true, stdio: ["pipe", "pipe", "pipe"] }); }
     catch (e) { return fin({ ok: false, err: e.message }); }
+    try { proc.stdin.write(String(prompt).replace(/\r/g, "")); proc.stdin.end(); } catch {}
     const to = setTimeout(() => { try { proc.kill("SIGKILL"); } catch {} fin({ ok: false, err: "timeout" }); }, CALL_TIMEOUT_MS);
     proc.stdout.on("data", d => { out += d.toString(); });
     proc.stderr.on("data", d => { err += d.toString(); });
