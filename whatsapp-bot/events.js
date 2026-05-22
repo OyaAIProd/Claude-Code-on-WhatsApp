@@ -96,14 +96,32 @@ Kalau cuma satu hal, array 1 elemen. Bahasa Indonesia.`;
 
 function num(v) { const n = parseFloat(v); return isFinite(n) ? n : null; }
 
-// Optional Antigravity CLI engine. Inert unless ANTIGRAVITY_BIN is set (it isn't installed yet).
-// When you install it, set in .env: ANTIGRAVITY_BIN=antigravity  (and ANTIGRAVITY_ARGS if flags differ).
+// Antigravity CLI (agy.exe, Gemini 3) — used when Groq is exhausted/limited.
+// Needs a one-time login: run `agy` interactively + sign in with Google. Headless hangs until then.
+const fs = require("fs"), os = require("os"), path = require("path"), crypto = require("crypto");
+function findAgy() {
+  if (process.env.ANTIGRAVITY_BIN) return process.env.ANTIGRAVITY_BIN;
+  const cands = [
+    path.join(os.homedir(), "AppData", "Local", "agy", "bin", "agy.exe"),
+    path.join(os.homedir(), ".agy", "bin", "agy"),
+    "agy"
+  ];
+  for (const c of cands) { try { if (c === "agy" || fs.existsSync(c)) return c; } catch {} }
+  return null;
+}
+const AGY_TIMEOUT_MS = parseInt(process.env.ANTIGRAVITY_TIMEOUT_MS || "120000", 10);
+let agyDeadUntil = 0;   // if agy hangs/fails (e.g. not logged in), skip it for a while
+
+function antigravityAvailable() {
+  if (!findAgy()) return false;
+  return Date.now() >= agyDeadUntil;
+}
+
 function antigravityDescribe(imagePath, prompt) {
   return new Promise((resolve) => {
-    const bin = process.env.ANTIGRAVITY_BIN;
+    const bin = findAgy();
     if (!bin) return resolve("");
     const { spawn } = require("child_process");
-    const path = require("path"), fs = require("fs"), os = require("os"), crypto = require("crypto");
     let dir, rel;
     try {
       dir = fs.mkdtempSync(path.join(os.tmpdir(), "ag_"));
@@ -112,13 +130,17 @@ function antigravityDescribe(imagePath, prompt) {
     } catch { return resolve(""); }
     const cleanup = () => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch {} };
     const safe = String(prompt).replace(/"/g, "'").replace(/[\r\n]+/g, " ");
-    const argsTpl = process.env.ANTIGRAVITY_ARGS || `-p "{prompt} @{file}"`;
-    const cmd = `${bin} ${argsTpl.replace("{prompt}", safe).replace("{file}", rel)}`;
+    const cmd = `"${bin}" --print --dangerously-skip-permissions --print-timeout 100s --add-dir "${dir}" "${safe} @${rel}"`;
     let out = "", done = false;
-    const fin = (v) => { if (!done) { done = true; cleanup(); resolve(v); } };
+    const fin = (v) => {
+      if (done) return; done = true; cleanup();
+      if (v) agyDeadUntil = 0;                                  // works → keep enabled
+      else agyDeadUntil = Date.now() + 30 * 60 * 1000;          // failed/hung → skip 30min (likely needs `agy` login)
+      resolve(v);
+    };
     try {
-      const p = spawn(cmd, { cwd: dir, env: process.env, shell: true });
-      const to = setTimeout(() => { try { p.kill("SIGKILL"); } catch {} fin(""); }, 120000);
+      const p = spawn(cmd, { cwd: dir, env: process.env, shell: true, stdio: ["ignore", "pipe", "pipe"] });
+      const to = setTimeout(() => { try { p.kill("SIGKILL"); } catch {} fin(""); }, AGY_TIMEOUT_MS);
       p.stdout.on("data", d => { out += d.toString(); });
       p.on("error", () => { clearTimeout(to); fin(""); });
       p.on("close", () => { clearTimeout(to); fin(out.trim()); });
@@ -133,7 +155,7 @@ async function extractFromImage(imagePath, { caption = "", chatId, chatName, sen
   // (e.g. Groq 429 limit) never blocks the others.
   const engines = [
     { name: "groq", avail: () => true, fn: () => vision.describeImage(imagePath, { prompt, caption }) },
-    { name: "antigravity", avail: () => !!process.env.ANTIGRAVITY_BIN, fn: () => antigravityDescribe(imagePath, prompt) },
+    { name: "antigravity", avail: () => antigravityAvailable(), fn: () => antigravityDescribe(imagePath, prompt) },
     { name: "gemini", avail: () => gemini.available(), fn: () => gemini.describe(imagePath, prompt) }
   ];
   let raw = "", used = "";
