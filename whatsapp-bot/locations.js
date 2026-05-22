@@ -140,6 +140,17 @@ function recentLocations(chatId = null, limit = 50) {
   } catch { return []; }
 }
 
+// Latest location per person (so the map shows current positions, not stale history points).
+function latestPerSender(limit = 100) {
+  const rows = recentLocations(null, 2000); // ts DESC
+  const seen = new Map();
+  for (const r of rows) {
+    const key = r.sender_key || (r.sender_name || "").toLowerCase() || r.sender_jid || "?";
+    if (!seen.has(key)) seen.set(key, r);
+  }
+  return [...seen.values()].slice(0, limit);
+}
+
 // Last N points of one person (oldest→newest) for direction reasoning.
 function getTrack(jid, chatId = null, limit = 8) {
   try {
@@ -295,7 +306,7 @@ function buildLocationContext(loc) {
 
 module.exports = {
   saveLocation, latestForName, latestForJid, isExpired, haversineKm, nearestWaypoint, waypointAt, setRadius,
-  addWaypoint, listWaypoints, deleteWaypoint, recentLocations, buildLocationContext, norm,
+  addWaypoint, listWaypoints, deleteWaypoint, recentLocations, latestPerSender, buildLocationContext, norm,
   getTrack, movementAnalysis, movementPhrase,
   addRoute, getRoute, listRoutes, deleteRoute, activeRouteFor, analyzeRoute, routePhrase
 };

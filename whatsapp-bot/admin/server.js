@@ -182,7 +182,7 @@ app.get("/api/audit", (req, res) => {
 app.get("/map", (req, res) => res.sendFile(path.join(__dirname, "public", "map.html")));
 app.get("/api/map", (req, res) => {
   try {
-    const locs = locations.recentLocations(null, 150).map(l => ({
+    const locs = locations.latestPerSender(150).map(l => ({
       sender: l.sender_name, lat: l.lat, lng: l.lng, is_live: l.is_live, ts: l.ts,
       expired: locations.isExpired(l), place: l.place_name, chat: l.chat_name
     }));
