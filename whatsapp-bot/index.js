@@ -47,6 +47,7 @@ const tts = require("./tts");
 const video = require("./video");
 const locations = require("./locations");
 const trackingEvents = require("./events");
+const aliases = require("./aliases");
 const persona = require("./persona");
 const plugins = require("./plugins");
 const workflows = require("./workflows");
@@ -369,7 +370,7 @@ const BOT_LOCAL_COMMANDS = new Set([
   "/event", "/events", "/ics", "/cal",
   "/ui-lang", "/uilang", "/version", "/update-check",
   "/lessons", "/lesson-del", "/skills", "/skill", "/skill-del", "/voice",
-  "/facts", "/fact-del", "/lokasi", "/titik", "/rute"
+  "/facts", "/fact-del", "/lokasi", "/titik", "/rute", "/alias", "/senders", "/who"
 ]);
 
 async function handleCommand(chatId, senderJid, text, isGroup, msg) {
@@ -395,7 +396,7 @@ async function handleCommand(chatId, senderJid, text, isGroup, msg) {
         button: `🔘 *PILIHAN & PREFERENSI*\n/pilih <n> atau /pick <n> — pilih opsi tombol\n/remembered — preferensi tersimpan\n/forget <pattern> — hapus preferensi`,
         learn: `🧠 *BELAJAR & SKILL*\nBot belajar otomatis dari: (1) koreksi lo, (2) tanya-jawab orang di grup.\n/lessons — pelajaran dari koreksi lo\n/lesson-del <id> — hapus (boss)\n/facts — fakta dari obrolan grup (status + alasan)\n/fact-del <id> — hapus fakta (boss)\n/skills — daftar skill\n/skill <nama> — detail skill\n/skill-del <nama> — hapus skill (boss)`,
         voice: `🔊 *VOICE / TTS*\nBot bisa bales pakai voice note (suara natural Supertonic).\n/voice on — semua balasan + voice note (tetap ada teks)\n/voice off — teks aja\n_Kirim voice → bot auto-bales voice juga (mirror), walau mode off._\nSetup model sekali: \`node tts/supertonic/download-model.mjs\``,
-        lokasi: `📍 *LOKASI & PETA*\nKirim share lokasi → bot inget siapa + dimana + arah. Tanya "X dimana / udah sampai mana" → bot jawab + kirim pin.\n/lokasi <nama> — pin + posisi terakhir orang itu\n/titik — daftar titik bernama\n/titik add <nama> <lat> <lng> — tambah titik\n/titik del <nama> — hapus\n/rute — daftar rute urut\n/rute add <nama>: A > B > C — buat urutan perjalanan\n/rute del <nama> — hapus rute\nPeta web (klik tambah titik): http://localhost:${process.env.ADMIN_PORT || "3458"}/map`
+        lokasi: `📍 *LOKASI & PETA*\nKirim share lokasi → bot inget siapa + dimana + arah. Tanya "X dimana / udah sampai mana" → bot jawab + kirim pin.\n/lokasi <nama> — pin + posisi terakhir orang itu\n/titik — daftar titik bernama\n/titik add <nama> <lat> <lng> — tambah titik\n/titik del <nama> — hapus\n/rute — daftar rute urut\n/rute add <nama>: A > B > C — buat urutan perjalanan\n/rute del <nama> — hapus rute\n/senders — liat akun WA pengirim\n/alias "julukan" = <nomor/nama> — map julukan ke akun (mis kep Agus)\n/alias list • /alias del <julukan>\nPeta web (klik tambah titik): http://localhost:${process.env.ADMIN_PORT || "3458"}/map`
       };
       const t = HELP_TOPICS[topic];
       if (t) return sendText(chatId, t, msg);
@@ -1091,6 +1092,37 @@ async function handleCommand(chatId, senderJid, text, isGroup, msg) {
     const id = parseInt(argText, 10);
     if (!id) return sendText(chatId, "Format: /fact-del <id> (liat /facts)", msg);
     return sendText(chatId, qaLearning.deleteFact(id) ? `🗑️ Fakta #${id} dihapus.` : `❌ #${id} gak ada.`, msg);
+  }
+
+  if (cmd === "/senders" || cmd === "/who") {
+    const rows = db.prepare("SELECT sender_name, sender_jid, COUNT(*) c, MAX(timestamp) t FROM messages WHERE from_me=0 GROUP BY sender_jid ORDER BY t DESC LIMIT 25").all();
+    if (!rows.length) return sendText(chatId, "Belum ada pengirim terekam.", msg);
+    const lines = rows.map(r => `• *${r.sender_name || "?"}* — ${(r.sender_jid || "").split("@")[0]} (${r.c} pesan)`);
+    return sendText(chatId, `👥 *AKUN PENGIRIM (25 terbaru)*\n\n${lines.join("\n")}\n\n_Map julukan: /alias "kep Agus" = <nomor/nama>_`, msg);
+  }
+  if (cmd === "/alias") {
+    const sub = (parts[1] || "").toLowerCase();
+    if (sub === "del") {
+      if (!boss) return sendText(chatId, "❌ Boss only.", msg);
+      const a = argText.replace(/^del\s+/i, "").trim();
+      return sendText(chatId, aliases.deleteAlias(a) ? `🗑️ Alias "${a}" dihapus.` : `❌ "${a}" gak ada.`, msg);
+    }
+    if (sub === "add" || argText.includes("=")) {
+      if (!boss) return sendText(chatId, "❌ Boss only.", msg);
+      const body = argText.replace(/^add\s+/i, "");
+      const eq = body.indexOf("=");
+      if (eq < 0) return sendText(chatId, 'Format: /alias "kep Agus" = <nama akun / nomor>\nLiat akun: /senders', msg);
+      const alias = body.slice(0, eq).replace(/["']/g, "").trim();
+      const target = body.slice(eq + 1).trim();
+      if (!alias || !target) return sendText(chatId, "Alias & target gak boleh kosong.", msg);
+      const isNum = /^\d{6,}$/.test(target.replace(/\D/g, "")) && /^\+?\d[\d\s-]+$/.test(target);
+      const r = aliases.setAlias(alias, isNum ? null : target, isNum ? target.replace(/\D/g, "") + "@s.whatsapp.net" : null);
+      return sendText(chatId, r ? `✅ "${alias}" → ${target}\n_Sekarang tanya "posisi ${alias}" bakal nyambung ke akun itu._` : "❌ Gagal.", msg);
+    }
+    const list = aliases.listAliases();
+    if (!list.length) return sendText(chatId, '🔗 Belum ada alias.\nMap julukan ke akun: /alias "kep Agus" = <nomor/nama>\nLiat akun: /senders', msg);
+    const lines = list.map(a => `• *${a.alias}* → ${a.target_name || (a.target_jid || "").split("@")[0]}`);
+    return sendText(chatId, `🔗 *ALIAS (${list.length})*\n\n${lines.join("\n")}\n\n_Tambah: /alias "julukan" = <nomor/nama> · Hapus: /alias del <julukan>_`, msg);
   }
 
   if (cmd === "/lokasi") {

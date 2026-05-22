@@ -2,6 +2,7 @@ const { db } = require("./storage");
 const gemini = require("./gemini");
 const vision = require("./vision");
 const locations = require("./locations");
+const aliases = require("./aliases");
 
 // Structured event log: every photo/caption becomes one or more events on an entity timeline.
 // Operational questions ("kapal X berangkat? sampai mana?") are answered from here, deterministically.
@@ -146,7 +147,10 @@ function queryTimeline(subjectQuery, { chatId = null, limit = 8 } = {}) {
   const key = canon(subjectQuery);
   if (!key) return [];
   // token-contains match so "kapal ramli"/"km ramli"/"ramli" all hit
-  const toks = key.split(" ").filter(t => t.length >= 3);
+  let toks = key.split(" ").filter(t => t.length >= 3);
+  // expand with alias targets ("kep Agus" -> real account name tokens)
+  for (const t of aliases.expandTargets(subjectQuery)) toks.push(...t.split(" ").filter(x => x.length >= 3));
+  toks = [...new Set(toks)];
   if (!toks.length) return [];
   try {
     const rows = db.prepare(`SELECT * FROM tracking_events ${chatId ? "WHERE chat_id=?" : ""} ORDER BY ts DESC LIMIT 400`).all(...(chatId ? [chatId] : []));

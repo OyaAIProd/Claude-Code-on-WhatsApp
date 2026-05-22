@@ -1,4 +1,5 @@
 const { db } = require("./storage");
+const aliases = require("./aliases");
 
 // Shared-location memory: who shared where + named waypoints. Reasoning is local math (no tokens).
 const LIVE_HOURS = parseFloat(process.env.LIVE_LOC_HOURS || "8");
@@ -61,13 +62,20 @@ function saveLocation({ chat_id, chat_name, sender_jid, sender_name, lat, lng, p
 function latestForName(query, chatId = null) {
   const q = norm(query);
   if (!q) return null;
-  const tokens = q.split(" ").filter(t => t.length >= 3 && !["kep", "pak", "bu", "bang", "mas", "kapten", "lokasi", "posisi", "dimana", "mana", "share", "live"].includes(t));
-  if (!tokens.length) return null;
+  let tokens = q.split(" ").filter(t => t.length >= 3 && !["kep", "pak", "bu", "bang", "mas", "kapten", "lokasi", "posisi", "dimana", "mana", "share", "live"].includes(t));
+  const aliasJids = [];
+  for (const tgt of aliases.expandTargets(query)) {        // "kep Agus" -> real account
+    if (/@/.test(tgt)) aliasJids.push(tgt);
+    else tokens.push(...tgt.split(" ").filter(x => x.length >= 3));
+  }
+  tokens = [...new Set(tokens)];
+  if (!tokens.length && !aliasJids.length) return null;
   try {
     const rows = db.prepare(`SELECT * FROM locations ${chatId ? "WHERE chat_id=?" : ""} ORDER BY ts DESC LIMIT 200`).all(...(chatId ? [chatId] : []));
     for (const r of rows) {
       const name = r.sender_key || "";
       if (tokens.some(t => name.includes(t))) return r;
+      if (aliasJids.length && r.sender_jid && aliasJids.some(j => r.sender_jid.includes(j.split("@")[0]))) return r;
     }
   } catch (err) { console.error("[LOC] latestForName:", err.message); }
   return null;
