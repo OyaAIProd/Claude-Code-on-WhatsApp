@@ -65,7 +65,9 @@ function saveMessage(msg) {
     db.prepare(`INSERT OR IGNORE INTO messages
       (chat_id, chat_name, is_group, sender_jid, sender_name, message_id, text, quoted_message_id, quoted_text, quoted_sender_jid, mentioned_jids, timestamp, from_me, media_path, media_filename, media_mimetype, media_caption)
       VALUES (@chat_id, @chat_name, @is_group, @sender_jid, @sender_name, @message_id, @text, @quoted_message_id, @quoted_text, @quoted_sender_jid, @mentioned_jids, @timestamp, @from_me, @media_path, @media_filename, @media_mimetype, @media_caption)`).run({
+        quoted_message_id: null, quoted_text: null, quoted_sender_jid: null, mentioned_jids: null,
         media_path: null, media_filename: null, media_mimetype: null, media_caption: null,
+        from_me: 0, is_group: 0, chat_name: null, text: null,
         ...msg
       });
   } catch (err) { console.error("save msg:", err.message); }
@@ -81,6 +83,13 @@ function searchMessages(chatId, keyword, limit = 30) {
 
 function getMessagesBySender(chatId, senderJid, limit = 50) {
   return db.prepare("SELECT * FROM messages WHERE chat_id=? AND sender_jid=? ORDER BY timestamp DESC LIMIT ?").all(chatId, senderJid, limit).reverse();
+}
+
+// Resolve a quoted/replied message by its WhatsApp id (to show who/what a reply targets).
+function getMessageById(message_id) {
+  if (!message_id) return null;
+  try { return db.prepare("SELECT chat_id, sender_jid, sender_name, text, from_me, media_caption, vision_desc FROM messages WHERE message_id=?").get(message_id); }
+  catch { return null; }
 }
 
 function getChatList() {
@@ -151,4 +160,4 @@ function ensureSession(chatId, uuid) {
   if (!exist) db.prepare("INSERT INTO chat_sessions (chat_id, session_uuid, name) VALUES (?, ?, ?)").run(chatId, uuid, `session ${listChatSessions(chatId).length + 1}`);
 }
 
-module.exports = { db, saveMessage, getRecentMessages, searchMessages, getMessagesBySender, getChatList, getChatConfig, setChatConfig, listChatSessions, newChatSession, findChatSession, renameCurrentSession, deleteChatSession, touchSession, ensureSession };
+module.exports = { db, saveMessage, getRecentMessages, searchMessages, getMessagesBySender, getMessageById, getChatList, getChatConfig, setChatConfig, listChatSessions, newChatSession, findChatSession, renameCurrentSession, deleteChatSession, touchSession, ensureSession };

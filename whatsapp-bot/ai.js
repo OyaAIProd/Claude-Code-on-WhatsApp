@@ -3,7 +3,7 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const crypto = require("crypto");
-const { getChatConfig, setChatConfig, touchSession, ensureSession } = require("./storage");
+const { getChatConfig, setChatConfig, touchSession, ensureSession, getMessageById } = require("./storage");
 const rag = require("./rag");
 const persona = require("./persona");
 const userProfiles = require("./user_profiles");
@@ -357,9 +357,15 @@ function buildContext(messages, isGroup) {
         }
       } catch {}
     }
-    if (m.quoted_message_id && m.quoted_text) {
-      const qs = m.quoted_sender_jid ? (m.quoted_sender_jid.split("@")[0]) : "?";
-      line += `\n  └─ reply to ${qs}: "${m.quoted_text.slice(0, 80)}"`;
+    if (m.quoted_message_id) {
+      // Resolve who/what this message replies to (deeper context: "X balas ke Y: ...").
+      let q = null;
+      try { q = getMessageById(m.quoted_message_id); } catch {}
+      const qname = q
+        ? (q.from_me ? "[BOT]" : (q.sender_name || (q.sender_jid || "").split("@")[0] || "?"))
+        : (m.quoted_sender_jid ? m.quoted_sender_jid.split("@")[0] : "?");
+      const qtext = (q?.text || m.quoted_text || q?.media_caption || "(media)").replace(/\s+/g, " ").slice(0, 120);
+      line += `\n  └─ ↪️ BALAS ke *${qname}*: "${qtext}"`;
     }
     return line;
   });
