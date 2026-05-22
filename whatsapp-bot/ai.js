@@ -21,6 +21,7 @@ const locations = require("./locations");
 const trackingEvents = require("./events");
 const i18n = require("./i18n");
 
+const BOT_DIR = __dirname;   // whatsapp-bot — where manage.js lives
 const CLAUDE_BIN = process.env.CLAUDE_BIN || "claude";
 const DEFAULT_CWD = process.env.CLAUDE_DEFAULT_CWD || os.homedir();
 const DEFAULT_MODEL = process.env.CLAUDE_MODEL || "sonnet";
@@ -313,7 +314,7 @@ function getEffort(chatId) { return getChatConfig(chatId).effort || process.env.
 function setEffort(chatId, effort) { setChatConfig(chatId, { effort }); }
 
 // Heuristic complexity classifier — free (no API). true = simple message.
-const COMPLEX_RE = /(analis|buatkan|bikin(in|kan|lah)?\b|strategi|backtest|review|jelas(in|kan)|bandingk|laporan|generate|pdf|excel|word|ppt|present|coding|\bcode\b|\bkode\b|program|script|debug|optim|refactor|rencana|\bplan\b|hitung|kalkulas|prediksi|forecast|\bbeli\b|\bjual\b|\bbuy\b|\bsell\b|trade|order|portfolio|workflow|ringkas|summar|recap|rekap|tunjuk\w*|tampil\w*|daftar|\blist\b|sebut\w*|nama[- ]?nama|anggota|member|peserta|riwayat|arsip)/i;
+const COMPLEX_RE = /(analis|buatkan|bikin(in|kan|lah)?\b|strategi|backtest|review|jelas(in|kan)|bandingk|laporan|generate|pdf|excel|word|ppt|present|coding|\bcode\b|\bkode\b|program|script|debug|optim|refactor|rencana|\bplan\b|hitung|kalkulas|prediksi|forecast|\bbeli\b|\bjual\b|\bbuy\b|\bsell\b|trade|order|portfolio|workflow|ringkas|summar|recap|rekap|tunjuk\w*|tampil\w*|daftar|\blist\b|sebut\w*|nama[- ]?nama|anggota|member|peserta|riwayat|arsip|ganti|ubah|rubah|hapus|tambah\w*|rename|jadiin|jadikan|\balias\b|\btitik\b|\brute\b)/i;
 
 function classifyComplexity(userText) {
   const t = (userText || "").trim();
@@ -625,6 +626,18 @@ async function streamMessage(userText, chatId, contextMessages = [], isGroup = f
         }
       } catch {}
     }
+  }
+
+  // Self-management (BOSS only): let Claude change the bot's own data via the manage.js CLI.
+  if (!simple && senderJid && isBoss(senderJid)) {
+    systemPrompt += `\n\n🛠️ KELOLA SISTEM SENDIRI (yang minta BOSS — lo BOLEH & BISA eksekusi via Bash):
+Jalanin: \`cd "${BOT_DIR}" && node manage.js <domain> <action> [args]\` (argumen ber-spasi WAJIB pakai kutip "...").
+- alias (julukan↔akun): \`alias set "<julukan>" "<nama akun/nomor>"\` · \`alias del "<julukan>"\` · \`alias list\`
+  Contoh: user "ganti riky 04 jadi kep Agus" → \`node manage.js alias set "kep Agus" "riky 04"\`
+- titik: \`titik set "<nama>" <lat> <lng> [radius]\` · \`titik radius "<nama>" <km>\` · \`titik del "<nama>"\` · \`titik list\`
+- rute: \`rute set "<nama>" "A>B>C"\` · \`rute del "<nama>"\` · \`rute list\`
+- lesson list/del <id> · fact list/del <id> · skill list/del "<nama>"
+Setelah eksekusi, cek output-nya lalu KONFIRMASI singkat ke user apa yang berubah. Kalau user minta ubah sistem, LANGSUNG kerjain (jangan nyuruh user ketik slash command).\n`;
   }
 
   if (safeMode) systemPrompt += SAFE_MODE_APPEND;
