@@ -2,6 +2,7 @@ const { db } = require("./storage");
 
 // Shared-location memory: who shared where + named waypoints. Reasoning is local math (no tokens).
 const LIVE_HOURS = parseFloat(process.env.LIVE_LOC_HOURS || "8");
+const DEFAULT_RADIUS_KM = parseFloat(process.env.WAYPOINT_RADIUS_KM || "1");
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS locations (
@@ -26,6 +27,7 @@ db.exec(`
     name_key TEXT UNIQUE,
     lat REAL,
     lng REAL,
+    radius_km REAL DEFAULT 1,
     ts INTEGER DEFAULT (strftime('%s','now'))
   );
   CREATE TABLE IF NOT EXISTS routes (
@@ -36,6 +38,7 @@ db.exec(`
     ts INTEGER DEFAULT (strftime('%s','now'))
   );
 `);
+try { db.exec("ALTER TABLE waypoints ADD COLUMN radius_km REAL DEFAULT 1"); } catch {}
 
 function norm(s) {
   return String(s || "").toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, " ").replace(/\s+/g, " ").trim();
@@ -100,14 +103,30 @@ function nearestWaypoint(lat, lng) {
   return best ? { waypoint: best, distanceKm: bestD } : null;
 }
 
-function addWaypoint(name, lat, lng) {
+// Waypoint whose radius CONTAINS the point (closest one if several overlap). null if outside all.
+function waypointAt(lat, lng) {
+  let best = null, bestD = Infinity;
+  for (const w of listWaypoints()) {
+    const d = haversineKm(lat, lng, w.lat, w.lng);
+    const r = w.radius_km || DEFAULT_RADIUS_KM;
+    if (d <= r && d < bestD) { bestD = d; best = w; }
+  }
+  return best ? { waypoint: best, distanceKm: bestD } : null;
+}
+
+function addWaypoint(name, lat, lng, radiusKm = null) {
   const key = norm(name);
   if (!key) return null;
   try {
-    db.prepare(`INSERT INTO waypoints (name, name_key, lat, lng) VALUES (?,?,?,?)
-      ON CONFLICT(name_key) DO UPDATE SET lat=excluded.lat, lng=excluded.lng, ts=strftime('%s','now')`).run(name, key, lat, lng);
+    db.prepare(`INSERT INTO waypoints (name, name_key, lat, lng, radius_km) VALUES (?,?,?,?,?)
+      ON CONFLICT(name_key) DO UPDATE SET lat=excluded.lat, lng=excluded.lng,
+        radius_km=COALESCE(excluded.radius_km, radius_km), ts=strftime('%s','now')`).run(name, key, lat, lng, radiusKm);
     return db.prepare("SELECT * FROM waypoints WHERE name_key=?").get(key);
   } catch (err) { console.error("[LOC] addWaypoint:", err.message); return null; }
+}
+function setRadius(name, radiusKm) {
+  try { return db.prepare("UPDATE waypoints SET radius_km=? WHERE name_key=?").run(radiusKm, norm(name)).changes > 0; }
+  catch { return false; }
 }
 function listWaypoints() {
   try { return db.prepare("SELECT * FROM waypoints ORDER BY name").all(); } catch { return []; }
@@ -136,8 +155,9 @@ function movementAnalysis(points) {
   if (!points || !points.length) return null;
   const cur = points[points.length - 1];
   const nearest = nearestWaypoint(cur.lat, cur.lng);
-  const out = { current: cur, nearest, arrived: null, approaching: null, leaving: null, moved: false };
-  if (nearest && nearest.distanceKm <= ARRIVE_KM) out.arrived = nearest.waypoint;
+  const inside = waypointAt(cur.lat, cur.lng);   // inside a waypoint's radius?
+  const out = { current: cur, nearest, inside, arrived: null, approaching: null, leaving: null, moved: false };
+  if (inside) out.arrived = inside.waypoint;
   if (points.length >= 2) {
     const ref = points[0];
     out.moved = haversineKm(ref.lat, ref.lng, cur.lat, cur.lng) > 0.2;
@@ -244,13 +264,15 @@ function fmtWIB(ts) {
 function buildLocationContext(loc) {
   if (!loc) return "";
   const expired = isExpired(loc);
+  const inside = waypointAt(loc.lat, loc.lng);
   const near = nearestWaypoint(loc.lat, loc.lng);
   const ageH = (Date.now() / 1000 - loc.ts) / 3600;
   let s = `\n\n📍 LOKASI TERPELAJAR — ${loc.sender_name || "?"}:\n`;
   s += `• Koordinat: ${loc.lat.toFixed(5)}, ${loc.lng.toFixed(5)}${loc.place_name ? ` (${loc.place_name})` : ""}\n`;
   s += `• Tipe: ${loc.is_live ? "live" : "pin"}${loc.is_live ? (expired ? " (SUDAH EXPIRED)" : " (masih aktif)") : ""}\n`;
   s += `• Waktu: ${fmtWIB(loc.ts)} WIB (${ageH < 1 ? "barusan" : ageH < 18 ? Math.round(ageH) + " jam lalu" : Math.round(ageH / 24) + " hari lalu"})\n`;
-  if (near) s += `• Titik terdekat: ${near.waypoint.name} (~${near.distanceKm.toFixed(1)} km)\n`;
+  if (inside) s += `• Posisi: BERADA DI ${inside.waypoint.name} (masuk radius ${inside.waypoint.radius_km || 1}km)\n`;
+  else if (near) s += `• Titik terdekat: ${near.waypoint.name} (~${near.distanceKm.toFixed(1)} km, DI LUAR radius)\n`;
   let onRoute = false;
   try {
     const track = getTrack(loc.sender_jid, loc.chat_id, 8);
@@ -272,7 +294,7 @@ function buildLocationContext(loc) {
 }
 
 module.exports = {
-  saveLocation, latestForName, latestForJid, isExpired, haversineKm, nearestWaypoint,
+  saveLocation, latestForName, latestForJid, isExpired, haversineKm, nearestWaypoint, waypointAt, setRadius,
   addWaypoint, listWaypoints, deleteWaypoint, recentLocations, buildLocationContext, norm,
   getTrack, movementAnalysis, movementPhrase,
   addRoute, getRoute, listRoutes, deleteRoute, activeRouteFor, analyzeRoute, routePhrase

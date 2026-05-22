@@ -110,10 +110,16 @@ async function extractFromImage(imagePath, { caption = "", chatId, chatName, sen
   for (const ev of arr) {
     if (!ev || !ev.subject_name) continue;
     const lat = num(ev.lat), lng = num(ev.lng);
+    // If GPS falls inside a named waypoint's radius, use the canonical waypoint as place.
+    let place = ev.place;
+    if (lat != null && lng != null) {
+      const wp = locations.waypointAt(lat, lng);
+      if (wp) place = wp.waypoint.name;
+    }
     const id = addEvent({
       chat_id: chatId, chat_name: chatName, subject_type: ev.subject_type, subject_name: ev.subject_name,
       action: ev.action && ev.action !== "null" ? ev.action : null,
-      dari: ev.dari, ke: ev.ke, via: ev.via, time_on_media: ev.time_on_media, place: ev.place,
+      dari: ev.dari, ke: ev.ke, via: ev.via, time_on_media: ev.time_on_media, place,
       goods_desc: ev.goods_desc, lat, lng, label: ev.label, source_sender: senderName, media_path: imagePath, ts
     });
     if (id) saved.push({ id, ...ev, lat, lng });

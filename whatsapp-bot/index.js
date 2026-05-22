@@ -1108,10 +1108,16 @@ async function handleCommand(chatId, senderJid, text, isGroup, msg) {
     const sub = (parts[1] || "").toLowerCase();
     if (sub === "add") {
       if (!boss) return sendText(chatId, "❌ Boss only.", msg);
-      const m = argText.match(/^add\s+(.+?)\s+(-?\d+(?:\.\d+)?)\s*[, ]\s*(-?\d+(?:\.\d+)?)\s*$/i);
-      if (!m) return sendText(chatId, "Format: /titik add <nama> <lat> <lng>\nContoh: /titik add saka jalan -0.5 103.2\n_Atau klik di peta web admin._", msg);
-      const w = locations.addWaypoint(m[1].trim(), parseFloat(m[2]), parseFloat(m[3]));
-      return sendText(chatId, w ? `✅ Titik *${w.name}* disimpan (${w.lat}, ${w.lng})` : "❌ Gagal simpan titik.", msg);
+      const m = argText.match(/^add\s+(.+?)\s+(-?\d+(?:\.\d+)?)\s*[, ]\s*(-?\d+(?:\.\d+)?)(?:\s+(\d+(?:\.\d+)?))?\s*$/i);
+      if (!m) return sendText(chatId, "Format: /titik add <nama> <lat> <lng> [radius_km]\nContoh: /titik add saka jalan -0.5 103.2 1.5\n_radius default 1km. Atau klik/geser di peta web admin._", msg);
+      const w = locations.addWaypoint(m[1].trim(), parseFloat(m[2]), parseFloat(m[3]), m[4] ? parseFloat(m[4]) : null);
+      return sendText(chatId, w ? `✅ Titik *${w.name}* (${w.lat}, ${w.lng}) radius ${w.radius_km || 1}km` : "❌ Gagal simpan titik.", msg);
+    }
+    if (sub === "radius") {
+      if (!boss) return sendText(chatId, "❌ Boss only.", msg);
+      const m = argText.match(/^radius\s+(.+?)\s+(\d+(?:\.\d+)?)\s*$/i);
+      if (!m) return sendText(chatId, "Format: /titik radius <nama> <km>", msg);
+      return sendText(chatId, locations.setRadius(m[1].trim(), parseFloat(m[2])) ? `✅ Radius *${m[1].trim()}* → ${m[2]}km` : `❌ "${m[1].trim()}" gak ada.`, msg);
     }
     if (sub === "del") {
       if (!boss) return sendText(chatId, "❌ Boss only.", msg);
@@ -1121,8 +1127,8 @@ async function handleCommand(chatId, senderJid, text, isGroup, msg) {
     const list = locations.listWaypoints();
     const port = process.env.ADMIN_PORT || "3458";
     if (!list.length) return sendText(chatId, `🗺️ Belum ada titik.\nTambah: /titik add <nama> <lat> <lng>\nAtau klik di peta: http://localhost:${port}/map`, msg);
-    const lines = list.map(w => `• *${w.name}* (${w.lat}, ${w.lng})`);
-    return sendText(chatId, `🗺️ *TITIK (${list.length})*\n\n${lines.join("\n")}\n\nPeta web: http://localhost:${port}/map\n_Tambah: /titik add <nama> <lat> <lng> · Hapus: /titik del <nama>_`, msg);
+    const lines = list.map(w => `• *${w.name}* (${w.lat}, ${w.lng}) ~${w.radius_km || 1}km`);
+    return sendText(chatId, `🗺️ *TITIK (${list.length})*\n\n${lines.join("\n")}\n\nPeta web: http://localhost:${port}/map\n_Tambah: /titik add <nama> <lat> <lng> [radius] · Radius: /titik radius <nama> <km> · Hapus: /titik del <nama>_`, msg);
   }
 
   if (cmd === "/rute") {

@@ -51,10 +51,21 @@
             pts.forEach(p => bounds.push(p));
           }
         });
-        (d.waypoints || []).forEach(w => {
-          L.circleMarker([w.lat, w.lng], { radius: 8, color: '#dc2626', fillColor: '#dc2626', fillOpacity: .9 })
-            .bindPopup('📍 <b>' + w.name + '</b><br>' + w.lat + ', ' + w.lng + '<br><button onclick="delWp(\'' + w.name.replace(/'/g, "\\'") + '\')">hapus</button>')
-            .addTo(layer);
+        (d.waypoints || []).forEach((w, i) => {
+          const rkm = w.radius_km || 1;
+          // radius circle
+          L.circle([w.lat, w.lng], { radius: rkm * 1000, color: '#dc2626', weight: 1, fillColor: '#dc2626', fillOpacity: .08 }).addTo(layer);
+          // draggable center marker
+          const mk = L.marker([w.lat, w.lng], { draggable: true, title: w.name }).addTo(layer);
+          mk.bindPopup('📍 <b>' + w.name + '</b><br>radius: <input id="r' + i + '" value="' + rkm + '" style="width:48px"> km '
+            + '<button onclick="setR(' + i + ',\'' + esc(w.name) + '\',' + w.lat + ',' + w.lng + ')">set</button>'
+            + '<br><small>' + w.lat.toFixed(5) + ', ' + w.lng.toFixed(5) + ' — geser marker untuk pindah</small>'
+            + '<br><button onclick="delWp(\'' + esc(w.name) + '\')">hapus</button>');
+          mk.on('dragend', async (e) => {
+            const ll = e.target.getLatLng();
+            await fetch('/api/waypoint', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: w.name, lat: ll.lat, lng: ll.lng }) });
+            load();
+          });
           bounds.push([w.lat, w.lng]);
         });
         (d.locations || []).forEach(l => {
@@ -77,12 +88,19 @@
       load();
     });
 
+    function esc(s) { return String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'"); }
     async function delWp(name) {
       if (!confirm('Hapus titik "' + name + '"?')) return;
       await fetch('/api/waypoint/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
       load();
     }
-    window.delWp = delWp;
+    async function setR(i, name, lat, lng) {
+      const v = parseFloat(document.getElementById('r' + i).value);
+      if (!isFinite(v) || v <= 0) { alert('radius km invalid'); return; }
+      await fetch('/api/waypoint', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, lat, lng, radius: v }) });
+      load();
+    }
+    window.delWp = delWp; window.setR = setR;
 
     load();
     setInterval(load, 20000);

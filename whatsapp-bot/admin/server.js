@@ -191,9 +191,9 @@ app.get("/api/map", (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 app.post("/api/waypoint", (req, res) => {
-  const { name, lat, lng } = req.body || {};
+  const { name, lat, lng, radius } = req.body || {};
   if (!name || typeof lat !== "number" || typeof lng !== "number") return res.status(400).json({ error: "name, lat, lng required" });
-  const w = locations.addWaypoint(name, lat, lng);
+  const w = locations.addWaypoint(name, lat, lng, typeof radius === "number" ? radius : null);
   res.json(w || { error: "fail" });
 });
 app.post("/api/waypoint/delete", (req, res) => {
