@@ -34,6 +34,62 @@ function escapeFts(q) {
   return uniq.map(t => `"${t}"*`).join(" OR ");
 }
 
+// Domain synonyms — expand query so "kapal"/"km", "sampai"/"tiba" etc all match (better recall).
+const SYNONYMS = [
+  ["kapal", "km", "kmp", "boat", "perahu"],
+  ["sampai", "tiba", "nyampe", "sampe", "arrived", "datang", "merapat"],
+  ["berangkat", "jalan", "brkt", "depart", "pergi", "bertolak"],
+  ["barang", "muatan", "kargo", "cargo", "goods"],
+  ["truk", "truck", "lori"],
+  ["gudang", "warehouse", "depo"],
+  ["lokasi", "posisi", "titik", "koordinat"]
+];
+const SYN_INDEX = (() => { const m = new Map(); for (const g of SYNONYMS) for (const w of g) m.set(w, g); return m; })();
+
+// FTS query with synonym expansion (used by cross-chat RAG search).
+function expandFts(q) {
+  const tokens = String(q || "").toLowerCase()
+    .replace(/["']/g, " ").replace(/[^\p{L}\p{N}\s]/gu, " ").replace(/\s+/g, " ").trim()
+    .split(" ").filter(t => t.length >= 3 && !FTS_STOPWORDS.has(t));
+  const set = new Set();
+  for (const t of tokens) {
+    set.add(t);
+    const g = SYN_INDEX.get(t);
+    if (g) for (const w of g) set.add(w);
+  }
+  if (!set.size) return "";
+  return [...set].map(t => `"${t}"*`).join(" OR ");
+}
+
+// Search image/video descriptions (vision_desc + caption) — makes the visual corpus part of RAG.
+function searchVisionDesc(query, { limit = 5, excludeChatId = null } = {}) {
+  const toks = [...new Set(String(query).toLowerCase().split(/\s+/).filter(t => t.length >= 3 && !FTS_STOPWORDS.has(t)))];
+  if (!toks.length) return [];
+  const field = "LOWER(IFNULL(vision_desc,'') || ' ' || IFNULL(media_caption,''))";
+  const whereOr = toks.map(() => `${field} LIKE ?`).join(" OR ");
+  const score = toks.map(() => `(CASE WHEN ${field} LIKE ? THEN 1 ELSE 0 END)`).join(" + ");
+  const likes = toks.map(t => `%${t}%`);
+  const params = [...likes, ...likes];
+  let sql = `SELECT id, chat_id, chat_name, is_group, sender_name, sender_jid, text, timestamp, media_filename, media_path, vision_desc, from_me, (${score}) AS s FROM messages WHERE vision_desc IS NOT NULL AND (${whereOr})`;
+  if (excludeChatId) { sql += " AND chat_id != ?"; params.push(excludeChatId); }
+  sql += " ORDER BY s DESC, timestamp DESC LIMIT ?"; params.push(limit);
+  try { return db.prepare(sql).all(...params); } catch (err) { console.error("vision search:", err.message); return []; }
+}
+
+// Reciprocal Rank Fusion: merge multiple ranked lists into one (better than naive interleave).
+function rrf(lists, { k = 60, limit = 6 } = {}) {
+  const scores = new Map(), keep = new Map();
+  for (const list of lists) {
+    list.forEach((item, i) => {
+      const id = item.id || item.message_id;
+      if (id == null) return;
+      scores.set(id, (scores.get(id) || 0) + 1 / (k + i + 1));
+      if (!keep.has(id)) keep.set(id, item);
+    });
+  }
+  return [...scores.entries()].sort((a, b) => b[1] - a[1]).slice(0, limit).map(([id]) => keep.get(id));
+}
+
 const IMG_STOPWORDS = new Set(["yang","foto","gambar","image","picture","photo","mana","tadi","kemarin","tentang","soal","apa","itu","ini","dong","coba","kirim","lihat","liat","show","cari","carikan","cariin"]);
 
 function searchImagesByDescription(query, { limit = 3, chatId = null } = {}) {
@@ -58,7 +114,7 @@ function searchImagesByDescription(query, { limit = 3, chatId = null } = {}) {
 }
 
 function searchAllMessages(query, { limit = 15, excludeChatId = null, minTimestamp = null } = {}) {
-  const ftsQuery = escapeFts(query);
+  const ftsQuery = expandFts(query);
   if (!ftsQuery) return [];
   try {
     const where = [];
@@ -219,5 +275,6 @@ function getProfileSourceMessages(chatId, limit = 80) {
 module.exports = {
   searchAllMessages, searchByChat, searchImagesByDescription, shouldDoRagSearch, buildRagContext,
   getGroupProfiles, buildGroupProfilesContext, upsertGroupProfile,
-  getChatsNeedingProfile, getProfileSourceMessages, escapeFts, fmtWIB
+  getChatsNeedingProfile, getProfileSourceMessages, escapeFts, fmtWIB,
+  expandFts, searchVisionDesc, rrf
 };

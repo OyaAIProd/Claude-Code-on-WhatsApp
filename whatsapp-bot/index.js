@@ -1373,6 +1373,18 @@ async function handleMessage(m) {
         message_id: msg.key.id, text: `[${isLive ? "live location" : "lokasi"}] ${senderName} share lokasi${locRaw.name ? " " + locRaw.name : ""}${near ? ` (dekat ${near.waypoint.name})` : ""}`,
         timestamp: msg.messageTimestamp, from_me: 0
       });
+      // GPS → event timeline (unifies with photo events). Action from movement vs waypoints.
+      try {
+        const mv = locations.movementAnalysis(locations.getTrack(senderJid, chatId, 8));
+        let action = "terlihat", place = near?.waypoint?.name || locRaw.name || null;
+        if (mv?.arrived) { action = "sampai"; place = mv.arrived.name; }
+        else if (mv?.approaching) { action = "transit"; place = mv.approaching.name; }
+        trackingEvents.addEvent({
+          chat_id: chatId, chat_name: chatName, subject_type: "orang", subject_name: senderName,
+          action, place, ke: mv?.approaching?.name || null, source_sender: senderName,
+          confidence: 0.55, ts: msg.messageTimestamp
+        });
+      } catch (e) { console.error("loc event:", e.message); }
     } catch (err) { console.error("location capture:", err.message); }
     if (!isMentionedBot(mentions, botJid) && !isReplyToBot(quoted)) return;  // silent unless engaged
     if (!text) text = `(${senderName} barusan share lokasi)`;

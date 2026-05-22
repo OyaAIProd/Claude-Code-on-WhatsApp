@@ -563,29 +563,18 @@ async function streamMessage(userText, chatId, contextMessages = [], isGroup = f
   }
 
   if (rag.shouldDoRagSearch(userText)) {
-    const ftsMatches = rag.searchAllMessages(userText, { limit: 5 });
+    const ftsMatches = rag.searchAllMessages(userText, { limit: 8 });          // text (synonym-expanded)
+    const visionMatches = rag.searchVisionDesc(userText, { limit: 5 });        // image/video descriptions
     let semanticMatches = [];
     if (process.env.EMBEDDINGS_ENABLED !== "0") {
-      try { semanticMatches = await embeddings.semanticSearch(userText, { limit: 3, threshold: 0.5 }); } catch {}
+      try { semanticMatches = await embeddings.semanticSearch(userText, { limit: 5, threshold: 0.5 }); } catch {}
     }
-    // Interleave fts + semantic so neither source dominates; dedupe; cap at 6 for token economy.
-    const seen = new Set();
-    const merged = [];
-    const maxLen = Math.max(ftsMatches.length, semanticMatches.length);
-    for (let i = 0; i < maxLen && merged.length < 6; i++) {
-      for (const m of [ftsMatches[i], semanticMatches[i]]) {
-        if (!m) continue;
-        const key = m.id || m.message_id;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        merged.push(m);
-        if (merged.length >= 6) break;
-      }
-    }
+    // Reciprocal Rank Fusion across text + vision + semantic; cap 6 for token economy.
+    const merged = rag.rrf([ftsMatches, visionMatches, semanticMatches], { limit: 6 });
     if (merged.length) {
-      const truncated = merged.map(m => ({ ...m, text: (m.text || "").slice(0, 160) }));
+      const truncated = merged.map(m => ({ ...m, text: (m.text || m.vision_desc || "").slice(0, 160) }));
       systemPrompt += rag.buildRagContext(truncated);
-      onEvent({ type: "tool_use", name: "RAG", input: {}, label: `🔎 RAG: ${ftsMatches.length} fts + ${semanticMatches.length} semantic` });
+      onEvent({ type: "tool_use", name: "RAG", input: {}, label: `🔎 RAG: ${ftsMatches.length}txt+${visionMatches.length}img+${semanticMatches.length}sem→${merged.length}` });
     }
   }
 
