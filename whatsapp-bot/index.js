@@ -1423,15 +1423,14 @@ async function handleMessage(m) {
     // Image → Gemini event extraction (structured events + summary). Video → Groq frames. No Claude tokens.
     const describeMedia = async () => {
       if (isImage) {
-        if (trackingEvents && require("./gemini").available()) {
-          try {
-            const r = await trackingEvents.extractFromImage(mediaInfo.path, {
-              caption: mediaInfo.caption, chatId, chatName, senderName, ts: msg.messageTimestamp
-            });
-            if (r && (r.summary || r.rawDesc)) return r.summary || r.rawDesc;
-          } catch (e) { console.error("event extract:", e.message); }
-        }
-        return vision.describeImage(mediaInfo.path, { mimetype: mediaInfo.mimetype, caption: mediaInfo.caption }); // fallback Groq
+        // Groq-first event extraction (Timemark: reads GPS+time+place+handwritten label), Gemini fallback inside.
+        try {
+          const r = await trackingEvents.extractFromImage(mediaInfo.path, {
+            caption: mediaInfo.caption, chatId, chatName, senderName, ts: msg.messageTimestamp
+          });
+          if (r && (r.summary || r.rawDesc)) return r.summary || r.rawDesc;
+        } catch (e) { console.error("event extract:", e.message); }
+        return vision.describeImage(mediaInfo.path, { mimetype: mediaInfo.mimetype, caption: mediaInfo.caption });
       }
       if (isVideo) return video.describeVideo(mediaInfo.path, { caption: mediaInfo.caption });
       return null;
