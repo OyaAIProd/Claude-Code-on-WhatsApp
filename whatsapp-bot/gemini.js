@@ -30,14 +30,18 @@ function parseResetMs(text) {
 
 function runOnce(model, dir, relFile, prompt) {
   return new Promise((resolve) => {
-    // Windows: `gemini` is a .cmd shim — must run via shell. Build a quoted command string;
-    // our prompt has no double-quotes (sanitized) and relFile is a safe name (no spaces).
-    const safePrompt = String(prompt).replace(/"/g, "'").replace(/[\r\n]+/g, " ");
-    const cmd = `${GEMINI_BIN} -e none -y -o text -m ${model} -p "${safePrompt} @${relFile}"`;
+    // Pass the prompt as an ARG ARRAY (no shell string) so special chars in the long extraction
+    // prompt (< > | [ ] { }) don't break cmd.exe parsing ("syntax error line 1").
+    // Windows: gemini is a .cmd → run via `cmd /c gemini ...`; Node escapes each arg for cmd.
+    const promptArg = `${String(prompt).replace(/[\r\n]+/g, " ")} @${relFile}`;
+    const baseArgs = ["-e", "none", "-y", "-o", "text", "-m", model, "-p", promptArg];
+    const isWin = process.platform === "win32";
+    const spawnCmd = isWin ? (process.env.ComSpec || "cmd.exe") : GEMINI_BIN;
+    const spawnArgs = isWin ? ["/c", GEMINI_BIN, ...baseArgs] : baseArgs;
     let out = "", err = "", done = false;
     const fin = (v) => { if (!done) { done = true; resolve(v); } };
     let proc;
-    try { proc = spawn(cmd, { cwd: dir, env: process.env, shell: true }); }
+    try { proc = spawn(spawnCmd, spawnArgs, { cwd: dir, env: process.env }); }   // no shell:true → safe arg escaping
     catch (e) { return fin({ ok: false, err: e.message }); }
     const to = setTimeout(() => { try { proc.kill("SIGKILL"); } catch {} fin({ ok: false, err: "timeout" }); }, CALL_TIMEOUT_MS);
     proc.stdout.on("data", d => { out += d.toString(); });
