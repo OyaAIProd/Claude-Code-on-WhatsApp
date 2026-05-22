@@ -151,7 +151,8 @@ function queryTimeline(subjectQuery, { chatId = null, limit = 8 } = {}) {
   try {
     const rows = db.prepare(`SELECT * FROM tracking_events ${chatId ? "WHERE chat_id=?" : ""} ORDER BY ts DESC LIMIT 400`).all(...(chatId ? [chatId] : []));
     const hit = rows.filter(r => {
-      const hay = `${r.subject_key || ""} ${r.via_key || ""}`;
+      // match subject, via (carrier), OR the person who posted it (so "kep Risky" finds his photos)
+      const hay = `${r.subject_key || ""} ${r.via_key || ""} ${canon(r.source_sender || "")}`;
       return toks.some(t => hay.includes(t));
     });
     return hit.slice(0, limit);
@@ -212,7 +213,11 @@ function buildStatusContext(subjectQuery, chatId = null) {
     else if (st.kind === "in_transit") hint = `STATUS: dalam perjalanan ${st.dep.dari || "?"}→${st.dep.ke || "?"} via ${st.dep.via || "?"} (berangkat ${relAge(st.dep.ts)}). Belum ada konfirmasi sampai.`;
     else hint = `STATUS: terlihat terakhir; belum ada event berangkat/sampai jelas.`;
   }
-  return `\n\n🚢 EVENT TIMELINE (dari foto/caption grup — JAWAB dari sini, sebut jam + alasan):\n${lines.join("\n")}\n${hint}\nAturan: pakai jam-di-foto kalau ada (itu waktu kejadian). "kemungkinan" = jangan klaim pasti. Kalau ada info lebih baru di chat, itu menang.\n`;
+  // Newest event with a place = current-position signal (the "secondary support" from photos).
+  const withPlace = [...tl].sort((a, b) => b.ts - a.ts).find(e => e.place);
+  let posisi = "";
+  if (withPlace) posisi = `POSISI TERKINI (dari foto/event terbaru): ${withPlace.place} per ${fmtWIB(withPlace.ts)} WIB (${relAge(withPlace.ts)}).`;
+  return `\n\n🚢 EVENT TIMELINE (dari foto/caption grup — JAWAB dari sini, sebut jam + alasan):\n${lines.join("\n")}\n${hint}\n${posisi}\nAturan: jam-di-foto = waktu kejadian. "kemungkinan" = jangan klaim pasti. TUMPUAN KEDUA: kalau share-lokasi GPS orang ini udah EXPIRED tapi ada FOTO/event lebih baru di tempat lain (mis "barang turun di Pelangiran"), pakai tempat dari foto sebagai posisi terkini — foto/event yang lebih baru MENANG atas GPS expired.\n`;
 }
 
 module.exports = { addEvent, extractFromImage, queryTimeline, canon, parseJsonArray, EXTRACT_PROMPT, inferStatus, buildStatusContext };
