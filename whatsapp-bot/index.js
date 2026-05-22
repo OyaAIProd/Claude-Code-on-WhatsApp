@@ -370,7 +370,7 @@ const BOT_LOCAL_COMMANDS = new Set([
   "/event", "/events", "/ics", "/cal",
   "/ui-lang", "/uilang", "/version", "/update-check",
   "/lessons", "/lesson-del", "/skills", "/skill", "/skill-del", "/voice",
-  "/facts", "/fact-del", "/lokasi", "/titik", "/rute", "/alias", "/senders", "/who"
+  "/facts", "/fact-del", "/lokasi", "/titik", "/rute", "/alias", "/senders", "/who", "/habits"
 ]);
 
 async function handleCommand(chatId, senderJid, text, isGroup, msg) {
@@ -1094,6 +1094,12 @@ async function handleCommand(chatId, senderJid, text, isGroup, msg) {
     return sendText(chatId, qaLearning.deleteFact(id) ? `🗑️ Fakta #${id} dihapus.` : `❌ #${id} gak ada.`, msg);
   }
 
+  if (cmd === "/habits") {
+    const list = require("./habits").listHabits();
+    if (!list.length) return sendText(chatId, "🎯 Belum ada habit. Ajarin: tanya + sebut grupnya (mis \"lokasi kep awi di grup internal\") → next pertanyaan mirip otomatis cari di situ.", msg);
+    const lines = list.map(h => { let t = []; try { t = JSON.parse(h.topic_tokens); } catch {} return `• ${t.join(" ")} → *${h.target_chat_name || "?"}* (${h.hits}x)`; });
+    return sendText(chatId, `🎯 *HABIT SUMBER (${list.length})*\n\n${lines.join("\n")}\n\n_Otomatis dari kebiasaan: tanya + sebut grup sekali → terpelajar._`, msg);
+  }
   if (cmd === "/senders" || cmd === "/who") {
     const rows = db.prepare("SELECT sender_name, sender_jid, COUNT(*) c, MAX(timestamp) t FROM messages WHERE from_me=0 GROUP BY sender_jid ORDER BY t DESC LIMIT 25").all();
     if (!rows.length) return sendText(chatId, "Belum ada pengirim terekam.", msg);

@@ -19,6 +19,7 @@ const skills = require("./skills_mod");
 const qaLearning = require("./qa_learning");
 const locations = require("./locations");
 const trackingEvents = require("./events");
+const habits = require("./habits");
 const i18n = require("./i18n");
 
 const BOT_DIR = __dirname;   // whatsapp-bot — where manage.js lives
@@ -626,6 +627,22 @@ async function streamMessage(userText, chatId, contextMessages = [], isGroup = f
         }
       } catch {}
     }
+    // Source habit: route this kind of question to the group it usually comes from (teks+gambar+caption).
+    try {
+      let target = habits.resolveGroupRef(userText);                 // explicit "di grup internal"
+      if (target) habits.recordHabit(userText, target.chat_id, target.chat_name);
+      else target = habits.findHabit(userText);                      // learned habit
+      if (target && target.chat_id && target.chat_id !== chatId) {
+        const inTxt = rag.searchByChat(target.chat_id, userText, 6);
+        const inImg = rag.searchVisionDesc(userText, { limit: 6 }).filter(r => r.chat_id === target.chat_id);
+        const merged = rag.rrf([inTxt, inImg], { limit: 6 });
+        if (merged.length) {
+          const trunc = merged.map(m => ({ ...m, text: (m.text || m.vision_desc || "").slice(0, 160) }));
+          systemPrompt += rag.buildRagContext(trunc, `🎯 SUMBER UTAMA — grup "${target.chat_name}" (data jenis ini biasanya di sini; teks+gambar+caption)`);
+          onEvent({ type: "tool_use", name: "habit", input: {}, label: `🎯 ${target.chat_name}` });
+        }
+      }
+    } catch {}
   }
 
   // Self-management (BOSS only): let Claude change the bot's own data via the manage.js CLI.
