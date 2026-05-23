@@ -17,8 +17,6 @@ const entities = require("./entities");
 const learning = require("./learning");
 const skills = require("./skills_mod");
 const qaLearning = require("./qa_learning");
-const locations = require("./locations");
-const trackingEvents = require("./events");
 const habits = require("./habits");
 const i18n = require("./i18n");
 
@@ -617,24 +615,6 @@ async function streamMessage(userText, chatId, contextMessages = [], isGroup = f
         onEvent({ type: "tool_use", name: "qa_facts", input: {}, label: `📌 ${facts.length} fakta` });
       }
     } catch {}
-    // Structured event timeline (kapal/orang/barang berangkat/sampai) — deterministic STATUS.
-    try {
-      const statusCtx = trackingEvents.buildStatusContext(userText, chatId);
-      if (statusCtx) {
-        systemPrompt += statusCtx;
-        onEvent({ type: "tool_use", name: "events", input: {}, label: `🚢 event timeline` });
-      }
-    } catch {}
-    // Shared-location recall: when asking where someone is.
-    if (/\b(lokasi|posisi|dimana|di\s?mana|sampai mana|udah sampai|sudah sampai|otw|menuju|berangkat|share\s?lok)\b/i.test(userText)) {
-      try {
-        const loc = locations.latestForName(userText, chatId);
-        if (loc) {
-          systemPrompt += locations.buildLocationContext(loc);
-          onEvent({ type: "tool_use", name: "location", input: {}, label: `📍 lokasi ${loc.sender_name}` });
-        }
-      } catch {}
-    }
     // Source habit: route this kind of question to the group it usually comes from (teks+gambar+caption).
     try {
       let target = habits.resolveGroupRef(userText);                 // explicit "di grup internal"
@@ -659,8 +639,6 @@ async function streamMessage(userText, chatId, contextMessages = [], isGroup = f
 Jalanin: \`cd "${BOT_DIR}" && node manage.js <domain> <action> [args]\` (argumen ber-spasi WAJIB pakai kutip "...").
 - alias (julukan↔akun): \`alias set "<julukan>" "<nama akun/nomor>"\` · \`alias del "<julukan>"\` · \`alias list\`
   Contoh: user "ganti riky 04 jadi kep Agus" → \`node manage.js alias set "kep Agus" "riky 04"\`
-- titik: \`titik set "<nama>" <lat> <lng> [radius]\` · \`titik radius "<nama>" <km>\` · \`titik del "<nama>"\` · \`titik list\`
-- rute: \`rute set "<nama>" "A>B>C"\` · \`rute del "<nama>"\` · \`rute list\`
 - habit (topik pertanyaan→grup sumber): \`habit set "<topik/keyword>" "<nama grup>"\` · \`habit del <id>\` · \`habit list\`
   Contoh: user "kalau ada yang tanya soal harga, cari di grup gudang" → \`node manage.js habit set "harga" "gudang"\`
 - lesson list/del <id> · fact list/del <id> · skill list/del "<nama>"

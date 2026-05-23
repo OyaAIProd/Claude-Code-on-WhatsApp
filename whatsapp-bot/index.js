@@ -67,6 +67,7 @@ let botJid = null;
 let botLid = null;
 let sock = null;
 const groupCache = new Map();   // group metadata cache — improves group message decryption/sender-keys
+const lastLocationMsg = new Map();   // sender_jid -> last shared-location message (for forwarding on ask)
 const logger = pino({ level: process.env.LOG_LEVEL || "warn" });
 const COOLDOWN_MS = 500;
 const lastReplyAt = new Map();
@@ -371,7 +372,7 @@ const BOT_LOCAL_COMMANDS = new Set([
   "/event", "/events", "/ics", "/cal",
   "/ui-lang", "/uilang", "/version", "/update-check",
   "/lessons", "/lesson-del", "/skills", "/skill", "/skill-del", "/voice",
-  "/facts", "/fact-del", "/lokasi", "/titik", "/rute", "/alias", "/senders", "/who", "/habits"
+  "/facts", "/fact-del", "/lokasi", "/alias", "/senders", "/who", "/habits"
 ]);
 
 async function handleCommand(chatId, senderJid, text, isGroup, msg) {
@@ -397,7 +398,7 @@ async function handleCommand(chatId, senderJid, text, isGroup, msg) {
         button: `🔘 *PILIHAN & PREFERENSI*\n/pilih <n> atau /pick <n> — pilih opsi tombol\n/remembered — preferensi tersimpan\n/forget <pattern> — hapus preferensi`,
         learn: `🧠 *BELAJAR & SKILL*\nBot belajar otomatis dari: (1) koreksi lo, (2) tanya-jawab orang di grup.\n/lessons — pelajaran dari koreksi lo\n/lesson-del <id> — hapus (boss)\n/facts — fakta dari obrolan grup (status + alasan)\n/fact-del <id> — hapus fakta (boss)\n/skills — daftar skill\n/skill <nama> — detail skill\n/skill-del <nama> — hapus skill (boss)`,
         voice: `🔊 *VOICE / TTS*\nBot bisa bales pakai voice note (suara natural Supertonic).\n/voice on — semua balasan + voice note (tetap ada teks)\n/voice off — teks aja\n_Kirim voice → bot auto-bales voice juga (mirror), walau mode off._\nSetup model sekali: \`node tts/supertonic/download-model.mjs\``,
-        lokasi: `📍 *LOKASI & PETA*\nKirim share lokasi → bot inget siapa + dimana + arah. Tanya "X dimana / udah sampai mana" → bot jawab + kirim pin.\n/lokasi <nama> — pin + posisi terakhir orang itu\n/titik — daftar titik bernama\n/titik add <nama> <lat> <lng> — tambah titik\n/titik del <nama> — hapus\n/rute — daftar rute urut\n/rute add <nama>: A > B > C — buat urutan perjalanan\n/rute del <nama> — hapus rute\n/senders — liat akun WA pengirim\n/alias "julukan" = <nomor/nama> — map julukan ke akun (mis kep Agus)\n/alias list • /alias del <julukan>\nPeta web (klik tambah titik): http://localhost:${process.env.ADMIN_PORT || "3458"}/map`
+        lokasi: `📍 *SHARE LOKASI*\nOrang share lokasi → bot inget. Tanya "kep X dimana / posisi kep X" → bot *forward* pesan lokasi kep itu ke penanya (bukan dihitung).\n/lokasi <nama> — kirim/forward lokasi terakhir orang itu\n/senders — liat akun WA pengirim\n/alias "julukan" = <nomor/nama> — map julukan ke akun (mis kep Agus)\n/alias list • /alias del <julukan>`
       };
       const t = HELP_TOPICS[topic];
       if (t) return sendText(chatId, t, msg);
@@ -1151,71 +1152,17 @@ async function handleCommand(chatId, senderJid, text, isGroup, msg) {
 
   if (cmd === "/lokasi") {
     if (!argText) return sendText(chatId, "Format: /lokasi <nama orang>\nContoh: /lokasi kep johan", msg);
-    const loc = locations.latestForName(argText, chatId) || locations.latestForName(argText, null);
-    if (!loc) return sendText(chatId, `📍 Belum ada share lokasi dari "${argText}".`, msg);
-    const expired = locations.isExpired(loc);
-    const when = new Date(loc.ts * 1000).toLocaleString("en-GB", { timeZone: "Asia/Jakarta", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false });
-    const phrase = locations.movementPhrase(locations.movementAnalysis(locations.getTrack(loc.sender_jid, loc.chat_id, 8)));
-    await sendLocation(chatId, loc.lat, loc.lng, loc.sender_name, msg);
-    return sendText(chatId, `📍 *${loc.sender_name}*\n${loc.is_live ? (expired ? "live (sudah expired)" : "live (aktif)") : "pin"} · ${when} WIB${phrase ? `\n🧭 ${phrase}` : ""}${expired ? "\n_⚠️ ini titik terakhir, bukan posisi live sekarang_" : ""}`, msg);
-  }
-
-  if (cmd === "/titik") {
-    const sub = (parts[1] || "").toLowerCase();
-    if (sub === "add") {
-      if (!boss) return sendText(chatId, "❌ Boss only.", msg);
-      const m = argText.match(/^add\s+(.+?)\s+(-?\d+(?:\.\d+)?)\s*[, ]\s*(-?\d+(?:\.\d+)?)(?:\s+(\d+(?:\.\d+)?))?\s*$/i);
-      if (!m) return sendText(chatId, "Format: /titik add <nama> <lat> <lng> [radius_km]\nContoh: /titik add saka jalan -0.5 103.2 1.5\n_radius default 1km. Atau klik/geser di peta web admin._", msg);
-      const w = locations.addWaypoint(m[1].trim(), parseFloat(m[2]), parseFloat(m[3]), m[4] ? parseFloat(m[4]) : null);
-      return sendText(chatId, w ? `✅ Titik *${w.name}* (${w.lat}, ${w.lng}) radius ${w.radius_km || 1}km` : "❌ Gagal simpan titik.", msg);
+    const found = findPersonLocation(argText);
+    if (found?.entry) {
+      try { await sock.sendMessage(chatId, { forward: found.entry.msg }, { quoted: msg }); } catch (e) { console.error("fwd:", e.message); }
+      const mins = Math.round((Date.now() / 1000 - found.entry.ts) / 60);
+      return sendText(chatId, `📍 Lokasi *${found.entry.name}*${found.entry.isLive ? " (live)" : ""} — di-share ${mins < 60 ? mins + " menit" : Math.round(mins / 60) + " jam"} lalu.`, msg);
     }
-    if (sub === "radius") {
-      if (!boss) return sendText(chatId, "❌ Boss only.", msg);
-      const m = argText.match(/^radius\s+(.+?)\s+(\d+(?:\.\d+)?)\s*$/i);
-      if (!m) return sendText(chatId, "Format: /titik radius <nama> <km>", msg);
-      return sendText(chatId, locations.setRadius(m[1].trim(), parseFloat(m[2])) ? `✅ Radius *${m[1].trim()}* → ${m[2]}km` : `❌ "${m[1].trim()}" gak ada.`, msg);
+    if (found?.dbRow) {
+      await sendLocation(chatId, found.dbRow.lat, found.dbRow.lng, found.dbRow.sender_name, msg);
+      return sendText(chatId, `📍 Lokasi terakhir *${found.dbRow.sender_name}* (yang dia share).`, msg);
     }
-    if (sub === "del") {
-      if (!boss) return sendText(chatId, "❌ Boss only.", msg);
-      const name = argText.replace(/^del\s+/i, "").trim();
-      return sendText(chatId, locations.deleteWaypoint(name) ? `🗑️ Titik "${name}" dihapus.` : `❌ "${name}" gak ada.`, msg);
-    }
-    const list = locations.listWaypoints();
-    const port = process.env.ADMIN_PORT || "3458";
-    if (!list.length) return sendText(chatId, `🗺️ Belum ada titik.\nTambah: /titik add <nama> <lat> <lng>\nAtau klik di peta: http://localhost:${port}/map`, msg);
-    const lines = list.map(w => `• *${w.name}* (${w.lat}, ${w.lng}) ~${w.radius_km || 1}km`);
-    return sendText(chatId, `🗺️ *TITIK (${list.length})*\n\n${lines.join("\n")}\n\nPeta web: http://localhost:${port}/map\n_Tambah: /titik add <nama> <lat> <lng> [radius] · Radius: /titik radius <nama> <km> · Hapus: /titik del <nama>_`, msg);
-  }
-
-  if (cmd === "/rute") {
-    const sub = (parts[1] || "").toLowerCase();
-    if (sub === "add") {
-      if (!boss) return sendText(chatId, "❌ Boss only.", msg);
-      const rest = argText.replace(/^add\s+/i, "");
-      const colon = rest.indexOf(":");
-      if (colon < 0) return sendText(chatId, "Format: /rute add <nama>: titikA > titikB > titikC\nContoh: /rute add tembilahan: titik A > saka jalan > pulau burung\n_(titik harus udah ada via /titik add)_", msg);
-      const rname = rest.slice(0, colon).trim();
-      const stops = rest.slice(colon + 1).split(/[>,]/).map(s => s.trim()).filter(Boolean);
-      if (stops.length < 2) return sendText(chatId, "Minimal 2 titik. Pisah pakai > atau ,", msg);
-      const r = locations.addRoute(rname, stops);
-      if (r && r.error) return sendText(chatId, `❌ ${r.error}`, msg);
-      if (!r) return sendText(chatId, "❌ Gagal simpan rute.", msg);
-      return sendText(chatId, `✅ Rute *${r.name}*:\n${r.stops.map((w, i) => `${i + 1}. ${w.name}`).join("\n")}`, msg);
-    }
-    if (sub === "del") {
-      if (!boss) return sendText(chatId, "❌ Boss only.", msg);
-      const name = argText.replace(/^del\s+/i, "").trim();
-      return sendText(chatId, locations.deleteRoute(name) ? `🗑️ Rute "${name}" dihapus.` : `❌ "${name}" gak ada.`, msg);
-    }
-    if (argText && sub !== "list") {
-      const r = locations.getRoute(argText);
-      if (!r) return sendText(chatId, `❌ Rute "${argText}" gak ada.`, msg);
-      return sendText(chatId, `🧭 *${r.name}*\n${r.stops.map((w, i) => `${i + 1}. ${w.name} (${w.lat}, ${w.lng})`).join("\n")}`, msg);
-    }
-    const routes = locations.listRoutes();
-    if (!routes.length) return sendText(chatId, "🧭 Belum ada rute.\nBuat: /rute add <nama>: titikA > titikB > titikC", msg);
-    const lines = routes.map(r => `• *${r.name}*: ${r.stops.map(w => w.name).join(" → ")}`);
-    return sendText(chatId, `🧭 *RUTE (${routes.length})*\n\n${lines.join("\n")}\n\n_Buat: /rute add <nama>: A > B > C · Hapus: /rute del <nama>_`, msg);
+    return sendText(chatId, `📍 Belum ada share lokasi dari "${argText}".`, msg);
   }
 
   if (cmd === "/skills") {
@@ -1378,6 +1325,20 @@ async function processUserMessage(chatId, userText, quotedMsg, isGroup, senderJi
   }
 }
 
+// Find a person's last shared location for "kep X dimana?" — prefer a cached (forwardable)
+// message; else fall back to DB coords (fresh pin). Resolves nicknames via aliases.
+function findPersonLocation(query) {
+  const targets = aliases.expandTargets(query);                 // [target_name_keys..., jids...]
+  for (const t of targets) if (/@/.test(t) && lastLocationMsg.has(t)) return { entry: lastLocationMsg.get(t) };
+  const qn = aliases.norm(query);
+  for (const [, e] of lastLocationMsg) {
+    const nm = aliases.norm(e.name);
+    if (nm && (qn.includes(nm) || targets.some(t => !/@/.test(t) && (nm.includes(t) || t.includes(nm))))) return { entry: e };
+  }
+  const row = locations.latestForName(query, null);
+  return row ? { dbRow: row } : null;
+}
+
 // Caption present -> learn entity (caption authoritative). Captionless -> try to recognize a
 // known object by visual features; returns a short inference tag to append to the description.
 async function learnImageEntities(chatId, caption, visionDesc, imagePath, ts) {
@@ -1400,10 +1361,11 @@ async function learnImageEntities(chatId, caption, visionDesc, imagePath, ts) {
 }
 
 async function handleMessage(m) {
-  const msg = m.messages?.[0];
-  if (!msg || !msg.message) return;
-  const chatIdRaw = msg.key.remoteJid;
-  if (!chatIdRaw || chatIdRaw === "status@broadcast") return;
+  try {
+    const msg = m.messages?.[0];
+    if (!msg || !msg.message) return;
+    const chatIdRaw = msg.key.remoteJid;
+    if (!chatIdRaw || chatIdRaw === "status@broadcast") return;
   const chatId = jidNormalizedUser(chatIdRaw);
   const fromMe = !!msg.key.fromMe;
   const isGroup = chatId.endsWith("@g.us");
@@ -1427,26 +1389,14 @@ async function handleMessage(m) {
         lat: locRaw.degreesLatitude, lng: locRaw.degreesLongitude, place_name: locRaw.name || null,
         is_live: isLive ? 1 : 0, ts: msg.messageTimestamp
       });
+      lastLocationMsg.set(senderJid, { msg, ts: msg.messageTimestamp, name: senderName, isLive });  // cache for forwarding
       console.log(`[LOC] ${senderName} ${isLive ? "live" : "pin"}: ${locRaw.degreesLatitude},${locRaw.degreesLongitude}`);
       await reactMsg(chatId, msg.key, "📍");
-      const near = locations.nearestWaypoint(locRaw.degreesLatitude, locRaw.degreesLongitude);
       saveMessage({
         chat_id: chatId, chat_name: chatName, is_group: isGroup ? 1 : 0, sender_jid: senderJid, sender_name: senderName,
-        message_id: msg.key.id, text: `[${isLive ? "live location" : "lokasi"}] ${senderName} share lokasi${locRaw.name ? " " + locRaw.name : ""}${near ? ` (dekat ${near.waypoint.name})` : ""}`,
+        message_id: msg.key.id, text: `[${isLive ? "live location" : "lokasi"}] ${senderName} share lokasi${locRaw.name ? " " + locRaw.name : ""}`,
         timestamp: msg.messageTimestamp, from_me: 0
       });
-      // GPS → event timeline (unifies with photo events). Action from movement vs waypoints.
-      try {
-        const mv = locations.movementAnalysis(locations.getTrack(senderJid, chatId, 8));
-        let action = "terlihat", place = near?.waypoint?.name || locRaw.name || null;
-        if (mv?.arrived) { action = "sampai"; place = mv.arrived.name; }
-        else if (mv?.approaching) { action = "transit"; place = mv.approaching.name; }
-        trackingEvents.addEvent({
-          chat_id: chatId, chat_name: chatName, subject_type: "orang", subject_name: senderName,
-          action, place, ke: mv?.approaching?.name || null, source_sender: senderName,
-          confidence: 0.55, ts: msg.messageTimestamp
-        });
-      } catch (e) { console.error("loc event:", e.message); }
     } catch (err) { console.error("location capture:", err.message); }
     if (!isMentionedBot(mentions, botJid) && !isReplyToBot(quoted)) return;  // silent unless engaged
     if (!text) text = `(${senderName} barusan share lokasi)`;
@@ -1695,6 +1645,27 @@ async function handleMessage(m) {
     }
   } catch (err) { console.error("workflow check:", err.message); }
 
+  // "kep X dimana / posisi kep X" -> forward that person's shared location to the asker (not computed).
+  if (text && !text.startsWith("/") && /\b(posisi|lokasi|di\s?mana|dimana|share\s?lok|lacak)\b/i.test(text)) {
+    const found = findPersonLocation(text);
+    if (found?.entry) {
+      try {
+        await sock.sendMessage(chatId, { forward: found.entry.msg }, { quoted: msg });
+        const mins = Math.round((Date.now() / 1000 - found.entry.ts) / 60);
+        await sendText(chatId, `📍 Lokasi *${found.entry.name}*${found.entry.isLive ? " (live)" : ""} — di-share ${mins < 60 ? mins + " menit" : Math.round(mins / 60) + " jam"} lalu.`, msg);
+        await reactMsg(chatId, msg.key, "✅");
+      } catch (e) { console.error("forward loc:", e.message); }
+      return;
+    }
+    if (found?.dbRow) {
+      await sendLocation(chatId, found.dbRow.lat, found.dbRow.lng, found.dbRow.sender_name, msg);
+      await sendText(chatId, `📍 Lokasi terakhir *${found.dbRow.sender_name}* (yang dia share).`, msg);
+      await reactMsg(chatId, msg.key, "✅");
+      return;
+    }
+    // tidak ketemu -> lanjut ke Claude (boleh bilang gak ada / bantu hal lain)
+  }
+
   lastReplyAt.set(chatId, Date.now());
   await reactMsg(chatId, msg.key, "⏳");
   await sock.sendPresenceUpdate("composing", chatId).catch(() => {});
@@ -1708,6 +1679,9 @@ async function handleMessage(m) {
     throw err;
   } finally {
     await sock.sendPresenceUpdate("paused", chatId).catch(() => {});
+  }
+  } catch (err) {
+    console.error("[CRITICAL ERROR] handleMessage:", err);
   }
 }
 
